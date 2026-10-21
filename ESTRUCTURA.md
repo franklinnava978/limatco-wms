@@ -1,9 +1,12 @@
 limatco-wms/
-├── contracts/                  
-│   └── schema.json             
-├── extension/                  
-├── agent/                     
-├── ingest-service/          
-├── wms-core/                   
-├── infra/                    
-└── README.md
+├── backend-api/
+│   ├── .env
+│   ├── credenciales.json      
+│   ├── package.json
+│   └── server.js
+└── extension/
+    ├── manifest.json
+    ├── background.js
+    ├── content.js
+    ├── popup.html
+    └── popup.js

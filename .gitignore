@@ -1,0 +1,32 @@
+# ==========================================
+# 🚨 SEGURIDAD Y CREDENCIALES (CRÍTICO) 🚨
+# ==========================================
+# Variables de entorno (Secretos, puertos, IDs)
+.env
+.env.local
+.env.production
+.env.development
+
+# Credenciales de Google Cloud (Service Accounts)
+credenciales.json
+*.json.key
+*.pem
+
+# ==========================================
+# 📦 DEPENDENCIAS DE NODE.JS
+# ==========================================
+node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+pnpm-debug.log
+
+# ==========================================
+# 🛠️ VS CODE Y HERRAMIENTAS DE IA
+# ==========================================
+.vscode/
+.idea/
+*.code-workspace
+# Caché local de asistentes de IA
+.antigravity/
+.cursor/

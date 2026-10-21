@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { width: 280px; padding: 15px; font-family: sans-serif; font-size: 14px; }
+        input { width: 92%; margin-bottom: 10px; padding: 6px; }
+        button { width: 100%; padding: 8px; background: #005A9E; color: white; border: none; cursor: pointer; border-radius: 4px;}
+        button:hover { background: #00457c; }
+        #status { margin-top: 10px; font-size: 12px; color: #333; text-align: center;}
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+    <h3>Limatco WMS</h3>
+    
+    <div id="login-view">
+        <input type="email" id="email" placeholder="Email (admin@limatco.cl)">
+        <input type="password" id="password" placeholder="Contraseña">
+        <button id="btn-login">Ingresar</button>
+    </div>
+
+    <div id="logged-view" class="hidden">
+        <p style="text-align:center; color: green; font-weight: bold;">✅ Conectado</p>
+        <p id="user-name" style="text-align:center;"></p>
+        <button id="btn-logout" style="background: #cc0000;">Cerrar Sesión</button>
+    </div>
+    
+    <div id="status"></div>
+    <script src="popup.js"></script>
+</body>
+</html>

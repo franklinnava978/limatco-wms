@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Limatco WMS - Capturador ERP",
+  "version": "1.2.0",
+  "description": "Captura notas de carga para el WMS de Limatco.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "*://data02.justtime.cl/*",
+    "http://localhost:3000/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://data02.justtime.cl/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
