@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useNavigate, useParams } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useNavigate, useParams, Outlet, NavLink } from 'react-router-dom';
 
 const API_URL = 'http://localhost:3000/api';
 
@@ -21,7 +21,7 @@ function Login() {
       const data = await res.json();
       if (res.ok) {
         localStorage.setItem('wms_token', data.token);
-        navigate('/dashboard');
+        navigate('/app/despachos');
       } else {
         setError(data.error);
       }
@@ -49,16 +49,61 @@ function Login() {
   );
 }
 
-// --- VISTA DE DASHBOARD (Lista de Notas) ---
-function Dashboard() {
+// --- LAYOUT PRINCIPAL CON SIDEBAR ---
+function AppLayout() {
+  const navigate = useNavigate();
+
+  const handleLogout = () => {
+    localStorage.clear();
+    navigate('/');
+  };
+
+  return (
+    <div className="app-layout">
+      {/* SIDEBAR */}
+      <div className="sidebar">
+        <div className="sidebar-brand">
+          📦 Limatco WMS
+        </div>
+        <div className="sidebar-nav">
+          <NavLink to="/app/despachos" className={({isActive}) => isActive ? "nav-item active" : "nav-item"}>
+            🚚 Despachos (Salidas)
+          </NavLink>
+          <NavLink to="/app/recepciones" className={({isActive}) => isActive ? "nav-item active" : "nav-item"}>
+            🚛 Recepciones (Compras)
+          </NavLink>
+          <NavLink to="/app/inventario" className={({isActive}) => isActive ? "nav-item active" : "nav-item"}>
+            📋 Kardex / Inventario
+          </NavLink>
+        </div>
+        <div className="sidebar-footer">
+          <button className="btn btn-danger" style={{width: '100%'}} onClick={handleLogout}>Cerrar Sesión</button>
+        </div>
+      </div>
+
+      {/* CONTENIDO DINÁMICO */}
+      <div className="main-content">
+        <Outlet />
+      </div>
+    </div>
+  );
+}
+
+// --- MÓDULO DE DESPACHOS (El Dashboard anterior) ---
+function Despachos() {
   const [notas, setNotas] = useState([]);
   const navigate = useNavigate();
 
-  const cargarNotas = () => {
-    fetch(`${API_URL}/capturas`)
-      .then(res => res.json())
-      .then(data => setNotas(data))
-      .catch(err => console.error("Error cargando notas", err));
+  const cargarNotas = async () => {
+    try {
+      const res = await fetch(`${API_URL}/capturas`);
+      const data = await res.json();
+      // Filtramos solo las de tipo OUTBOUND (Despachos)
+      const despachos = data.filter(n => (n[9] || 'OUTBOUND') === 'OUTBOUND');
+      setNotas(despachos);
+    } catch (err) {
+      console.error("Error cargando notas", err);
+    }
   };
 
   useEffect(() => {
@@ -66,17 +111,13 @@ function Dashboard() {
   }, []);
 
   return (
-    <div className="container">
+    <div>
       <div className="header">
-        <h1>📦 Panel de Despachos</h1>
-        <div>
-          <button className="btn" onClick={cargarNotas} style={{marginRight: '10px', background: '#e5e7eb'}}>🔄 Actualizar</button>
-          <button className="btn btn-danger" onClick={() => { localStorage.clear(); navigate('/'); }}>Salir</button>
-        </div>
+        <h1>🚚 Despachos (Notas de Carga)</h1>
+        <button className="btn" onClick={cargarNotas} style={{background: '#e5e7eb'}}>🔄 Actualizar</button>
       </div>
-      
+
       <div className="card">
-        <h3>Notas Capturadas desde Justtime</h3>
         <table>
           <thead>
             <tr>
@@ -89,22 +130,40 @@ function Dashboard() {
             </tr>
           </thead>
           <tbody>
-            {notas.map((nota, index) => (
-              <tr key={index}>
-                <td>{new Date(nota[1]).toLocaleString()}</td>
-                <td><strong>{nota[2]}</strong></td>
-                <td>{nota[3]}</td>
-                <td>{nota[4]}</td>
-                <td><span className="badge badge-pending">{nota[5]}</span></td>
-                <td>
-                  <button className="btn btn-primary" onClick={() => navigate(`/picking/${nota[0]}`, { state: { nota } })}>
-                    Preparar (Picking)
-                  </button>
-                </td>
-              </tr>
-            ))}
+            {notas.map((nota, index) => {
+              let tipoDespacho = "VALIJA";
+              let colorBadge = "#3b82f6";
+              try {
+                const json = JSON.parse(nota[6]);
+                tipoDespacho = json.tipo_despacho || "VALIJA";
+                if (tipoDespacho === "RETIRO_TIENDA") colorBadge = "#d97706";
+                if (tipoDespacho === "FLETE") colorBadge = "#7c3aed";
+              } catch(e){}
+
+              return (
+                <tr key={index}>
+                  <td>{new Date(nota[1]).toLocaleString()}</td>
+                  <td>
+                    <strong>{nota[2]}</strong><br/>
+                    <span style={{fontSize: '10px', color: '#666'}}>{tipoDespacho}</span>
+                  </td>
+                  <td>{nota[3]}</td>
+                  <td>{nota[4]}</td>
+                  <td>
+                    <span className="badge" style={{backgroundColor: colorBadge, color: 'white'}}>
+                      {nota[5] || 'N/A'}
+                    </span>
+                  </td>
+                  <td>
+                    <button className="btn btn-primary" onClick={() => navigate(`/app/picking/${nota[0]}`)}>
+                      Preparar
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
             {notas.length === 0 && (
-              <tr><td colSpan="6" style={{textAlign: 'center'}}>No hay notas capturadas aún. Abre Justtime para generar una.</td></tr>
+              <tr><td colSpan="6" style={{textAlign: 'center'}}>No hay notas de despacho capturadas.</td></tr>
             )}
           </tbody>
         </table>
@@ -113,7 +172,38 @@ function Dashboard() {
   );
 }
 
-/// --- VISTA DE PICKING (Detalle de la Nota) ---
+// --- MÓDULO DE RECEPCIONES (Esqueleto) ---
+function Recepciones() {
+  return (
+    <div>
+      <div className="header">
+        <h1>🚛 Recepciones (Órdenes de Compra)</h1>
+      </div>
+      <div className="card" style={{textAlign: 'center', padding: '50px'}}>
+        <h3 style={{color: '#6b7280'}}>Módulo en construcción</h3>
+        <p>Aquí se listarán las Órdenes de Compra capturadas desde Justtime.</p>
+        <p style={{fontSize: '12px', color: '#9ca3af'}}>Esperando diseño de la OC para conectar el parser...</p>
+      </div>
+    </div>
+  );
+}
+
+// --- MÓDULO DE KARDEX (Esqueleto) ---
+function Inventario() {
+  return (
+    <div>
+      <div className="header">
+        <h1>📋 Kardex / Inventario Físico</h1>
+      </div>
+      <div className="card" style={{textAlign: 'center', padding: '50px'}}>
+        <h3 style={{color: '#6b7280'}}>Módulo en construcción</h3>
+        <p>Aquí se verá el stock real consolidado por bodega.</p>
+      </div>
+    </div>
+  );
+}
+
+// --- VISTA DE PICKING (Detalle de la Nota - Se mantiene igual) ---
 function Picking() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -121,6 +211,8 @@ function Picking() {
   const [estadoActual, setEstadoActual] = useState('PENDIENTE');
   const [cargando, setCargando] = useState(true);
   const [completado, setCompletado] = useState(false);
+  const [scannedLines, setScannedLines] = useState([]);
+  const [scanInput, setScanInput] = useState('');
 
   useEffect(() => {
     fetch(`${API_URL}/capturas/${id}`)
@@ -139,13 +231,27 @@ function Picking() {
       });
   }, [id]);
 
+  const handleScan = (e) => {
+    e.preventDefault();
+    if (!scanInput || !notaData) return;
+    const index = notaData.lineas.findIndex(
+      (l, i) => l.codigoMaterial.includes(scanInput.trim()) && !scannedLines.includes(i)
+    );
+    if (index !== -1) {
+      setScannedLines([...scannedLines, index]);
+    } else {
+      alert("Material no encontrado o ya escaneado.");
+    }
+    setScanInput('');
+  };
+
   const confirmarPicking = async () => {
     setCargando(true);
     try {
       const res = await fetch(`${API_URL}/capturas/${id}/confirmar`, { method: 'PUT' });
       if (res.ok) {
         setCompletado(true);
-        setTimeout(() => navigate('/dashboard'), 2000);
+        setTimeout(() => navigate('/app/despachos'), 2000);
       } else {
         alert("Error al confirmar.");
         setCargando(false);
@@ -156,87 +262,97 @@ function Picking() {
     }
   };
 
-  if (cargando && !notaData) return <div className="container"><h2>Cargando nota...</h2></div>;
-  if (!notaData) return <div className="container"><h2>Error: No se pudo cargar la nota.</h2><button className="btn btn-primary" onClick={() => navigate('/dashboard')}>Volver</button></div>;
+  if (cargando && !notaData) return <h2>Cargando nota...</h2>;
+  if (!notaData) return <h2>Error al cargar la nota.</h2>;
 
   if (completado) {
     return (
-      <div className="container" style={{textAlign: 'center', marginTop: '50px'}}>
+      <div style={{textAlign: 'center', marginTop: '50px'}}>
         <h1 style={{color: '#065f46', fontSize: '40px'}}>✅ ¡Recolección Completada!</h1>
-        <p style={{fontSize: '20px', marginTop: '20px'}}>La nota ha sido enviada al área de despacho.</p>
       </div>
     );
   }
 
-  // Asignar color según el tipo de despacho
-  let colorDespacho = '#0284c7'; // Azul por defecto
-  if (notaData.tipo_despacho === 'RETIRO_TIENDA') colorDespacho = '#d97706'; // Naranja
-  if (notaData.tipo_despacho === 'FLETE') colorDespacho = '#7c3aed'; // Morado
+  let bgColor = '#005A9E';
+  if (notaData.tipo_despacho === 'RETIRO_TIENDA') bgColor = '#d97706';
+  if (notaData.tipo_despacho === 'FLETE') bgColor = '#7c3aed';
+
+  const todoEscaneado = scannedLines.length === notaData.lineas.length;
 
   return (
-    <div className="container">
-      <div className="header">
-        <h1>📝 Recolección: {notaData.tipo_documento} {notaData.numero_documento}</h1>
-        <button className="btn btn-danger" onClick={() => navigate('/dashboard')}>Volver al Panel</button>
+    <div style={{ maxWidth: '600px', margin: '0 auto' }}>
+      <div className="pda-header" style={{ backgroundColor: bgColor }}>
+        <div>
+          <h1 style={{ fontSize: '20px', margin: 0 }}>{notaData.tipo_despacho}</h1>
+          <p style={{ margin: 0, fontSize: '14px' }}>{notaData.numero_documento}</p>
+        </div>
+        <button className="btn" style={{backgroundColor: 'rgba(255,255,255,0.2)', color: 'white'}} onClick={() => navigate('/app/despachos')}>
+          ✖
+        </button>
       </div>
 
-      <div className="card" style={{backgroundColor: '#f8fafc', borderLeft: `5px solid ${colorDespacho}`}}>
-        <h2 style={{color: colorDespacho, marginBottom: '10px'}}>
-          Tipo: {notaData.tipo_despacho || 'VALIJA'} | Destino: {notaData.sucursal_destino_codigo || 'N/A'}
-        </h2>
-        <p><strong>Bodega Origen:</strong> {notaData.bodega_origen}</p>
-        <p><strong>Referencia ERP:</strong> {notaData.destino_texto}</p>
-        <p><strong>Estado actual:</strong> <span className={`badge ${estadoActual === 'COMPLETADO' ? 'badge-success' : 'badge-pending'}`}>{estadoActual}</span></p>
+      {estadoActual === 'PENDIENTE' && (
+        <form onSubmit={handleScan}>
+          <input 
+            type="text" 
+            className="scanner-input" 
+            placeholder="🔍 Escanear Material..." 
+            value={scanInput}
+            onChange={(e) => setScanInput(e.target.value)}
+            autoFocus
+          />
+        </form>
+      )}
+
+      <div>
+        {notaData.lineas.map((linea, i) => {
+          const isScanned = scannedLines.includes(i);
+          return (
+            <div key={i} className={`pda-card ${isScanned ? 'scanned' : ''}`}>
+              <div>
+                <div className="pda-ubicacion">{linea.ubicacionFisica}</div>
+                <div className="pda-material">{linea.codigoMaterial} - {linea.descripcion}</div>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <div className="pda-cantidad">{linea.cantidad}</div>
+                <div style={{ fontSize: '12px', color: '#6b7280' }}>{linea.unidad}</div>
+              </div>
+            </div>
+          );
+        })}
       </div>
 
-      <div className="card">
-        <h3>Materiales a Preparar</h3>
-        <table>
-            <thead>
-              <tr style={{backgroundColor: '#f3f4f6'}}>
-                <th style={{fontSize: '18px', color: '#005A9E'}}>Ir a Ubicación</th>
-                <th>Código Material</th>
-                <th>Descripción</th>
-                <th style={{fontSize: '18px', color: '#005A9E'}}>Cantidad</th> {/* <--- AQUÍ SE CAMBIA */}
-                <th>Unidad</th>
-              </tr>
-            </thead>
-          <tbody>
-            {notaData.lineas && notaData.lineas.map((linea, i) => (
-              <tr key={i}>
-                <td><strong style={{color: '#005A9E', fontSize: '24px', backgroundColor: '#e5e7eb', padding: '5px 10px', borderRadius: '4px'}}>{linea.ubicacionFisica}</strong></td>
-                <td style={{fontSize: '16px'}}>{linea.codigoMaterial}</td>
-                <td>{linea.descripcion}</td>
-                <td><strong style={{fontSize: '24px', color: '#005A9E'}}>{linea.cantidad}</strong></td>
-                <td>{linea.unidad}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div style={{ textAlign: 'center', marginTop: '30px' }}>
+      <div style={{ marginTop: '30px', marginBottom: '50px' }}>
         <button 
-          className="btn btn-primary" 
-          style={{ fontSize: '24px', padding: '20px 50px', borderRadius: '50px', backgroundColor: estadoActual === 'COMPLETADO' ? '#9ca3af' : '#005A9E' }} 
+          className="btn-confirmar" 
           onClick={confirmarPicking}
-          disabled={cargando || estadoActual === 'COMPLETADO'}
+          disabled={!todoEscaneado || estadoActual === 'COMPLETADO' || cargando}
         >
-          {cargando ? "Procesando..." : (estadoActual === 'COMPLETADO' ? "Ya Completado" : "✅ Confirmar Recolección")}
+          {estadoActual === 'COMPLETADO' ? "YA COMPLETADO" : 
+           todoEscaneado ? "✅ CONFIRMAR DESPACHO" : 
+           `FALTAN ${notaData.lineas.length - scannedLines.length} MATERIALES`}
         </button>
       </div>
     </div>
   );
 }
 
-// --- RUTEO PRINCIPAL ---
+// --- RUTEO PRINCIPAL CON LAYOUT ---
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<Login />} />
-        <Route path="/dashboard" element={<Dashboard />} />
-        <Route path="/picking/:id" element={<Picking />} />
+        
+        {/* Rutas protegidas dentro del Layout con Sidebar */}
+        <Route path="/app" element={<AppLayout />}>
+          <Route index element={<Navigate to="/app/despachos" replace />} />
+          <Route path="despachos" element={<Despachos />} />
+          <Route path="recepciones" element={<Recepciones />} />
+          <Route path="inventario" element={<Inventario />} />
+          <Route path="picking/:id" element={<Picking />} />
+        </Route>
+        
         <Route path="*" element={<Navigate to="/" />} />
       </Routes>
     </BrowserRouter>
