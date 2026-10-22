@@ -40,7 +40,7 @@ app.post('/api/capturas', async (req, res) => {
         const data = req.body;
         const fechaActual = new Date().toISOString();
 
-               const fila = [
+            const fila = [
             Date.now(),
             fechaActual,
             data.tipo_documento,
@@ -49,7 +49,8 @@ app.post('/api/capturas', async (req, res) => {
             data.sucursal_destino_codigo || "Desconocido",
             JSON.stringify(data), 
             data.erp_url,
-            "PENDIENTE" // <-- NUEVO: Estado inicial
+            "PENDIENTE",
+            data.tipo_flujo || "OUTBOUND" // <-- NUEVO: INBOUND para OC, OUTBOUND para Notas
         ];
 
         await sheets.spreadsheets.values.append({
