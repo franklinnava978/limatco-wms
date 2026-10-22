@@ -153,6 +153,7 @@ function Despachos() {
 // --- MÓDULO DE RECEPCIONES (OC) ---
 function Recepciones() {
   const [ordenes, setOrdenes] = useState([]);
+  const navigate = useNavigate();
 
     const cargarOrdenes = async () => {
     try {
@@ -194,7 +195,11 @@ function Recepciones() {
                 <td>{oc[3]}</td>
                 <td>{oc[4]}</td>
                 <td><span className="badge badge-success">{oc[5]}</span></td>
-                <td><button className="btn btn-primary" onClick={() => alert("Pantalla de Recepción Física en construcción")}>Recibir</button></td>
+                <td>
+                <button className="btn btn-primary" onClick={() => navigate(`/app/recepcion/${oc[0]}`)}>
+                  Recibir
+                </button>
+                </td>
               </tr>
             ))}
             {ordenes.length === 0 && <tr><td colSpan="6" style={{textAlign: 'center'}}>No hay órdenes de compra capturadas.</td></tr>}
@@ -288,6 +293,133 @@ function Picking() {
   );
 }
 
+// --- VISTA DE RECEPCIÓN FÍSICA (Muelle) ---
+function RecepcionFisica() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const [ocData, setOcData] = useState(null);
+  const [estadoActual, setEstadoActual] = useState('PENDIENTE');
+  const [cargando, setCargando] = useState(true);
+  const [completado, setCompletado] = useState(false);
+  
+  // Estado para manejar las cantidades que el operario confirma
+  const [cantidadesRecibidas, setCantidadesRecibidas] = useState([]);
+
+  useEffect(() => {
+    fetch(`${API_URL}/capturas/${id}`)
+      .then(res => {
+        if (!res.ok) throw new Error("No encontrada");
+        return res.json();
+      })
+      .then(data => {
+        setOcData(data.data);
+        setEstadoActual(data.estado);
+        
+        // Inicializamos el array de cantidades con lo que dice la OC
+        const iniciales = data.data.lineas.map(l => l.cantidad);
+        setCantidadesRecibidas(iniciales);
+        
+        setCargando(false);
+      })
+      .catch(err => {
+        console.error("Error cargando OC:", err);
+        setCargando(false);
+      });
+  }, [id]);
+
+  const handleCantidadChange = (index, valor) => {
+    const nuevasCantidades = [...cantidadesRecibidas];
+    nuevasCantidades[index] = parseFloat(valor) || 0;
+    setCantidadesRecibidas(nuevasCantidades);
+  };
+
+  const confirmarRecepcion = async () => {
+    setCargando(true);
+    try {
+      // Enviamos el estado COMPLETADO (o RECIBIDO)
+      const res = await fetch(`${API_URL}/capturas/${id}/confirmar`, { method: 'PUT' });
+      if (res.ok) {
+        setCompletado(true);
+        setTimeout(() => navigate('/app/recepciones'), 2500);
+      } else {
+        alert("Error al confirmar la recepción.");
+        setCargando(false);
+      }
+    } catch (err) {
+      alert("Error de conexión.");
+      setCargando(false);
+    }
+  };
+
+  if (cargando && !ocData) return <h2>Cargando Orden de Compra...</h2>;
+  if (!ocData) return <h2>Error al cargar la OC.</h2>;
+
+  if (completado) {
+    return (
+      <div style={{textAlign: 'center', marginTop: '50px'}}>
+        <h1 style={{color: '#065f46', fontSize: '40px'}}>✅ ¡Recepción Confirmada!</h1>
+        <p style={{fontSize: '20px', marginTop: '20px'}}>El stock ha ingresado al Kardex.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ maxWidth: '800px', margin: '0 auto' }}>
+      <div className="pda-header" style={{ backgroundColor: '#059669' }}>
+        <div>
+          <h1 style={{ fontSize: '20px', margin: 0 }}>RECEPCIÓN EN MUELLE</h1>
+          <p style={{ margin: 0, fontSize: '14px' }}>OC: {ocData.numero_documento} | {ocData.bodega_origen}</p>
+        </div>
+        <button className="btn" style={{backgroundColor: 'rgba(255,255,255,0.2)', color: 'white'}} onClick={() => navigate('/app/recepciones')}>
+          ✖ Cancelar
+        </button>
+      </div>
+
+      <div className="card">
+        <table>
+          <thead>
+            <tr>
+              <th>Material</th>
+              <th>Descripción</th>
+              <th>Cant. Esperada</th>
+              <th>Cant. Recibida (Editable)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ocData.lineas.map((linea, i) => (
+              <tr key={i}>
+                <td><strong>{linea.codigoMaterial}</strong></td>
+                <td>{linea.descripcion}</td>
+                <td style={{fontSize: '18px', color: '#6b7280'}}>{linea.cantidad}</td>
+                <td>
+                  <input 
+                    type="number" 
+                    className="input-cantidad" 
+                    value={cantidadesRecibidas[i]} 
+                    onChange={(e) => handleCantidadChange(i, e.target.value)}
+                    style={{ width: '80px', padding: '10px', fontSize: '18px', textAlign: 'center', border: '2px solid #3b82f6', borderRadius: '6px' }}
+                  />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ marginTop: '20px', marginBottom: '50px' }}>
+        <button 
+          className="btn-confirmar" 
+          onClick={confirmarRecepcion}
+          disabled={cargando || estadoActual === 'COMPLETADO'}
+          style={{ backgroundColor: '#059669' }} // Verde para recepción
+        >
+          {estadoActual === 'COMPLETADO' ? "YA RECIBIDO" : "✅ CONFIRMAR RECEPCIÓN Y GUARDAR EN KARDEX"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // --- RUTEO PRINCIPAL ---
 export default function App() {
   return (
@@ -300,6 +432,7 @@ export default function App() {
           <Route path="recepciones" element={<Recepciones />} />
           <Route path="inventario" element={<Inventario />} />
           <Route path="picking/:id" element={<Picking />} />
+          <Route path="recepcion/:id" element={<RecepcionFisica />} />
         </Route>
         <Route path="*" element={<Navigate to="/" />} />
       </Routes>
