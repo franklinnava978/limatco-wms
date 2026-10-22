@@ -26,27 +26,33 @@ function extraerDatosNota() {
   const matchSucursal = textoPagina.match(/Sucursal que Despacha:\s*([A-Z0-9\-]+)/i);
   if (matchSucursal) bodegaOrigen = matchSucursal[1].trim().toUpperCase();
 
-  // 3. Destino (01=Retiro, 02=Valija, 03=Flete)
+  // 3. Destino y Tipo de Despacho (01=Retiro, 02=Valija, 03=Flete)
   let tipoDespacho = "DESCONOCIDO";
   let codigoDestino = null;
   let destinoTexto = "";
 
   const matchDirDespacho = textoPagina.match(/Dirección Despacho:(.*?)(?:\n|$)/i);
   if (matchDirDespacho) {
-    const lineaDespacho = matchDirDespacho[1].trim();
+    // Limpiamos espacios extra y mayúsculas para evaluar
+    const lineaDespacho = matchDirDespacho[1].trim().replace(/\s+/g, ' ');
     destinoTexto = lineaDespacho;
-    if (lineaDespacho.startsWith("01")) {
-      tipoDespacho = "RETIRO_TIENDA"; codigoDestino = "RETIRO";
-    } else if (lineaDespacho.startsWith("02")) {
+    const lineaUpper = lineaDespacho.toUpperCase();
+
+    if (lineaUpper.startsWith("01")) {
+      tipoDespacho = "RETIRO_TIENDA"; 
+      codigoDestino = "RETIRO";
+    } else if (lineaUpper.startsWith("02")) {
       tipoDespacho = "VALIJA";
-      const matchL = lineaDespacho.match(/L\s*[-]?\s*(\d{2})/i);
-      if (matchL) codigoDestino = `L-${matchL[1]}`;
-    } else if (lineaDespacho.startsWith("03")) {
-      tipoDespacho = "FLETE"; codigoDestino = "CLIENTE";
+      // Busca L8, L08, L-8, etc., y lo formatea a L-08
+      const matchL = lineaUpper.match(/L\s*[-]?\s*(\d{1,2})/i);
+      if (matchL) codigoDestino = `L-${matchL[1].padStart(2, '0')}`;
+    } else if (lineaUpper.startsWith("03")) {
+      tipoDespacho = "FLETE"; 
+      codigoDestino = "CLIENTE";
     }
   }
 
-  // 4. Tabla de Productos (Mapeo Exacto por Cabecera)
+  // 4. Tabla de Productos (Mapeo Fijo basado en la estructura real)
   const lineas = [];
   const tablas = document.querySelectorAll("table");
   let tablaProductos = null;
@@ -59,51 +65,29 @@ function extraerDatosNota() {
 
   if (tablaProductos) {
     const filas = tablaProductos.querySelectorAll("tr");
-    let idxCod = 0, idxDesc = 1, idxUbic = 5, idxUni = 6, idxCant = 7; // Valores por defecto según tu ERP
-
+    
     filas.forEach(fila => {
       const celdas = fila.querySelectorAll("td");
-      if (celdas.length < 5) return;
-
-      // Si es cabecera, mapeamos exactamente los índices
-      if (fila.innerText.includes("Código") && fila.innerText.includes("Descripción")) {
-        celdas.forEach((celda, i) => {
-          const txt = celda.innerText.trim().toUpperCase();
-          if (txt === "CÓDIGO") idxCod = i;
-          if (txt === "DESCRIPCIÓN") idxDesc = i;
-          if (txt.includes("UBICACIÓN")) idxUbic = i;
-          if (txt === "UNIDAD") idxUni = i;
-          if (txt === "CANTIDAD") idxCant = i; 
-        });
-        return;
-      }
-
-      const codMaterial = celdas[idxCod]?.innerText.trim();
-      if (codMaterial && !isNaN(parseFloat(codMaterial.replace(/\D/g, '')))) {
+      if (celdas.length >= 10) { // Aseguramos que tenga las 12 columnas que vimos
         
-        // --- DEBUG: Esto imprimirá en consola cómo viene la fila real ---
-        console.log("Fila detectada:", Array.from(celdas).map(c => c.innerText.trim()));
+        const codMaterial = celdas[0]?.innerText.trim();
+        // Validar que empiece con código de material (letras/números)
+        if (codMaterial && codMaterial.length > 2 && !codMaterial.includes("Código")) {
+          
+          let cantidadStr = celdas[8]?.innerText.replace(",", ".").trim(); // Col 8: Cant a Cargar
+          // Si col 8 está vacía, tomamos la col 7 (Cantidad normal)
+          if (!cantidadStr || cantidadStr === "") {
+              cantidadStr = celdas[7]?.innerText.replace(",", ".").trim();
+          }
 
-        let ubicacion = celdas[idxUbic]?.innerText.trim() || "SIN_UBICACION";
-        let unidad = celdas[idxUni]?.innerText.trim() || "UN";
-        let cantidadStr = celdas[idxCant]?.innerText.replace(",", ".").trim() || "0";
-        let cantidad = parseFloat(cantidadStr);
-
-        // Si la cantidad sale 0 o es igual al código, buscamos en la celda de "Cantidad a cargar"
-        if (isNaN(cantidad) || cantidad === 0) {
-            const cantCargarStr = celdas[idxCant + 1]?.innerText.replace(",", ".").trim();
-            if (cantCargarStr && !isNaN(parseFloat(cantCargarStr))) {
-                cantidad = parseFloat(cantCargarStr);
-            }
+          lineas.push({
+            codigoMaterial: codMaterial,
+            descripcion: celdas[1]?.innerText.trim() || "",
+            ubicacionFisica: celdas[5]?.innerText.trim() || "SIN_UBICACION",
+            unidad: celdas[6]?.innerText.trim() || "UN",
+            cantidad: parseFloat(cantidadStr) || 0
+          });
         }
-
-        lineas.push({
-          codigoMaterial: codMaterial,
-          descripcion: celdas[idxDesc]?.innerText.trim() || "",
-          ubicacionFisica: ubicacion,
-          unidad: unidad,
-          cantidad: cantidad
-        });
       }
     });
   }
