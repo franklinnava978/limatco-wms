@@ -17,10 +17,9 @@ const auth = new google.auth.GoogleAuth({
 const sheets = google.sheets({ version: 'v4', auth });
 const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID;
 
-// --- ENDPOINT DE LOGIN ---
+// --- LOGIN ---
 app.post('/api/login', async (req, res) => {
     const { email, password } = req.body;
-    // Credenciales temporales para pruebas
     if (email === "admin@limatco.cl" && password === "Limatco.2026") {
         const token = jwt.sign({ user: email, role: 'operario' }, process.env.JWT_SECRET, { expiresIn: '12h' });
         return res.json({ token, user: "Administrador Limatco" });
@@ -28,7 +27,7 @@ app.post('/api/login', async (req, res) => {
     res.status(401).json({ error: "Credenciales incorrectas" });
 });
 
-// --- ENDPOINT DE CAPTURA (RECIBE DATOS DE LA EXTENSIÓN) ---
+/// --- CAPTURA (EXTENSIÓN) ---
 app.post('/api/capturas', async (req, res) => {
     const authHeader = req.headers.authorization;
     if (!authHeader) return res.status(403).json({ error: "No autorizado" });
@@ -40,113 +39,199 @@ app.post('/api/capturas', async (req, res) => {
         const data = req.body;
         const fechaActual = new Date().toISOString();
 
-            const fila = [
-            Date.now(),
-            fechaActual,
-            data.tipo_documento,
-            data.numero_documento,
-            data.bodega_origen,
-            data.sucursal_destino_codigo || "Desconocido",
-            JSON.stringify(data), 
-            data.erp_url,
-            "PENDIENTE",
-            data.tipo_flujo || "OUTBOUND" // <-- NUEVO: INBOUND para OC, OUTBOUND para Notas
+        // 🛑 CANDADO DE SEGURIDAD: Evitar OCs duplicadas
+        if (data.tipo_documento === 'ORDEN_COMPRA') {
+            const response = await sheets.spreadsheets.values.get({
+                spreadsheetId: SPREADSHEET_ID, range: 'A2:K1000',
+            });
+            const rows = response.data.values || [];
+            
+            // Buscamos si ya hay una OC con ese mismo número que NO esté completada
+            const ocExistente = rows.find(row => 
+                row[3] === data.numero_documento && 
+                (row[8] === 'PENDIENTE' || row[8] === 'PARCIAL')
+            );
+
+            if (ocExistente) {
+                console.log(`⚠️ [WMS] La OC ${data.numero_documento} ya está en el sistema. Captura ignorada.`);
+                return res.json({ status: "OK", mensaje: "OC ya existente", id: ocExistente[0] });
+            }
+        }
+
+        // Si no existe, la guardamos normalmente
+        const fila = [
+            Date.now(), fechaActual, data.tipo_documento, data.numero_documento,
+            data.bodega_origen, data.sucursal_destino_codigo || "Desconocido",
+            JSON.stringify(data), data.erp_url, "PENDIENTE", data.tipo_flujo || "OUTBOUND", ""
         ];
 
         await sheets.spreadsheets.values.append({
-            spreadsheetId: SPREADSHEET_ID,
-            range: 'A1',
-            valueInputOption: 'USER_ENTERED',
+            spreadsheetId: SPREADSHEET_ID, range: 'A1', valueInputOption: 'USER_ENTERED',
             requestBody: { values: [fila] },
         });
 
-        console.log(`✅ [Sheets] Nota ${data.numero_documento} guardada en Google Sheets.`);
         res.json({ status: "OK", mensaje: "Guardado", id: fila[0] });
-
     } catch (error) {
-        console.error("❌ Error guardando en Sheets:", error.message);
+        console.error("❌ Error captura:", error.message);
         res.status(500).json({ error: "Error interno" });
     }
 });
 
-// --- ENDPOINT PARA LEER LAS CAPTURAS (Faltaba esto) ---
+// --- OBTENER CAPTURAS ---
 app.get('/api/capturas', async (req, res) => {
     try {
         const response = await sheets.spreadsheets.values.get({
-            spreadsheetId: SPREADSHEET_ID,
-            range: 'A2:H100', // Lee desde la fila 2 hasta la 100
+            spreadsheetId: SPREADSHEET_ID, range: 'A2:K1000',
         });
-        
-        // Si la hoja está vacía, response.data.values será undefined
-        const filas = response.data.values || [];
-        res.json(filas);
+        res.json(response.data.values || []);
     } catch (error) {
-        console.error("❌ Error leyendo de Sheets:", error.message);
-        res.status(500).json({ error: "Error leyendo la base de datos" });
+        res.status(500).json({ error: "Error leyendo" });
     }
 });
 
-// --- ENDPOINT PARA OBTENER UNA NOTA POR ID ---
+// --- OBTENER UNA CAPTURA POR ID ---
 app.get('/api/capturas/:id', async (req, res) => {
     try {
         const { id } = req.params;
         const response = await sheets.spreadsheets.values.get({
-            spreadsheetId: SPREADSHEET_ID,
-            range: 'A2:I1000', // Leemos hasta la columna I (Estado)
+            spreadsheetId: SPREADSHEET_ID, range: 'A2:K1000',
         });
-        
         const rows = response.data.values || [];
         const row = rows.find(r => String(r[0]) === String(id));
         
-        if (!row) return res.status(404).json({ error: "Nota no encontrada" });
+        if (!row) return res.status(404).json({ error: "No encontrada" });
         
-        // Retornamos el JSON parseado y el estado actual
-        const notaData = JSON.parse(row[6]); 
-        res.json({ id: row[0], estado: row[8] || 'PENDIENTE', data: notaData });
+        res.json({ id: row[0], estado: row[8] || 'PENDIENTE', data: JSON.parse(row[6]) });
     } catch (error) {
-        console.error("❌ Error obteniendo nota:", error.message);
         res.status(500).json({ error: "Error interno" });
     }
 });
 
-// --- ENDPOINT PARA CONFIRMAR PICKING ---
+// --- CONFIRMAR PICKING (DESPACHO) ---
 app.put('/api/capturas/:id/confirmar', async (req, res) => {
     try {
         const { id } = req.params;
-        
-        // 1. Leer la hoja para encontrar en qué fila está ese ID
         const response = await sheets.spreadsheets.values.get({
-            spreadsheetId: SPREADSHEET_ID,
-            range: 'A2:A1000',
+            spreadsheetId: SPREADSHEET_ID, range: 'A2:A1000',
         });
-        
         const rows = response.data.values || [];
         const rowIndex = rows.findIndex(row => String(row[0]) === String(id));
         
-        if (rowIndex === -1) {
-            return res.status(404).json({ error: "Nota no encontrada" });
-        }
+        if (rowIndex === -1) return res.status(404).json({ error: "No encontrada" });
 
-        // rowIndex es 0-based, pero en Google Sheets las filas empiezan en 1. 
-        // Además, empezamos a leer desde la fila 2, así que sumamos +2.
-        const sheetRow = rowIndex + 2;
-
-        // 2. Actualizar la columna I (Estado) de esa fila
         await sheets.spreadsheets.values.update({
-            spreadsheetId: SPREADSHEET_ID,
-            range: `I${sheetRow}`,
-            valueInputOption: 'USER_ENTERED',
-            requestBody: { values: [["COMPLETADO"]] },
+            spreadsheetId: SPREADSHEET_ID, range: `I${rowIndex + 2}`,
+            valueInputOption: 'USER_ENTERED', requestBody: { values: [["COMPLETADO"]] },
         });
 
-        console.log(`✅ [Sheets] Nota ID ${id} marcada como COMPLETADA.`);
-        res.json({ status: "OK", mensaje: "Picking confirmado" });
-
+        res.json({ status: "OK" });
     } catch (error) {
-        console.error("❌ Error confirmando picking:", error.message);
         res.status(500).json({ error: "Error interno" });
+    }
+});
+
+// --- REGISTRAR RECEPCIÓN (MUELLE) ---
+app.post('/api/recepciones', async (req, res) => {
+    try {
+        const { oc_id, oc_numero, proveedor, items, esCompleta } = req.body;
+        const fechaActual = new Date().toISOString();
+        const recId = Date.now();
+
+        // 🛑 CANDADO DE SEGURIDAD: Verificar estado actual de la OC
+        const response = await sheets.spreadsheets.values.get({
+            spreadsheetId: SPREADSHEET_ID, range: 'A2:K1000',
+        });
+        const rows = response.data.values || [];
+        const rowIndex = rows.findIndex(row => String(row[0]) === String(oc_id));
+
+        if (rowIndex === -1) {
+            return res.status(404).json({ error: "OC no encontrada" });
+        }
+
+        const estadoActual = rows[rowIndex][8] || 'PENDIENTE';
+        if (estadoActual === 'COMPLETADO') {
+            return res.status(400).json({ error: "Esta Orden de Compra ya fue recibida en su totalidad." });
+        }
+
+        // Si no hay items recibidos, no hacemos nada
+        if (!items || items.length === 0) {
+            return res.status(400).json({ error: "No se ingresaron cantidades a recibir." });
+        }
+
+        // 1. Guardamos el evento de Recepción
+        const jsonRecepcion = {
+            tipo_flujo: "INBOUND",
+            tipo_documento: "RECEPCION",
+            numero_documento: oc_numero,
+            bodega_origen: proveedor,
+            lineas: items
+        };
+
+        const filaRecepcion = [
+            recId, fechaActual, "RECEPCION", oc_numero, proveedor, "MUELLE",
+            JSON.stringify(jsonRecepcion), "", "COMPLETADO", "INBOUND", oc_id
+        ];
+
+        await sheets.spreadsheets.values.append({
+            spreadsheetId: SPREADSHEET_ID, range: 'A1', valueInputOption: 'USER_ENTERED',
+            requestBody: { values: [filaRecepcion] },
+        });
+
+        // 2. Actualizamos estado de la OC original
+        const nuevoEstado = esCompleta ? "COMPLETADO" : "PARCIAL";
+        await sheets.spreadsheets.values.update({
+            spreadsheetId: SPREADSHEET_ID, range: `I${rowIndex + 2}`,
+            valueInputOption: 'USER_ENTERED', requestBody: { values: [[nuevoEstado]] },
+        });
+
+        res.json({ status: "OK" });
+    } catch (error) {
+        console.error("❌ Error recepción:", error.message);
+        res.status(500).json({ error: "Error interno" });
+    }
+});
+
+// --- KARDEX (INVENTARIO MATEMÁTICO) ---
+app.get('/api/inventario', async (req, res) => {
+    try {
+        const response = await sheets.spreadsheets.values.get({
+            spreadsheetId: SPREADSHEET_ID, range: 'A2:K1000',
+        });
+        const rows = response.data.values || [];
+        const kardex = {};
+
+        rows.forEach(row => {
+            const estado = row[8]; 
+            const esRecepcion = row[2] === 'RECEPCION';
+            const tipoFlujo = row[9] || 'OUTBOUND';
+            
+            // Solo procesamos si está COMPLETADO
+            if (estado !== 'COMPLETADO') return;
+
+            try {
+                const data = JSON.parse(row[6]);
+                if (!data.lineas) return;
+
+                data.lineas.forEach(linea => {
+                    const cod = linea.codigoMaterial;
+                    if (!kardex[cod]) {
+                        kardex[cod] = { codigo: cod, descripcion: linea.descripcion, stock: 0 };
+                    }
+                    
+                    if (esRecepcion || tipoFlujo === 'INBOUND') {
+                        kardex[cod].stock += linea.cantidad;
+                    } else {
+                        kardex[cod].stock -= linea.cantidad;
+                    }
+                });
+            } catch (e) { }
+        });
+
+        res.json(Object.values(kardex));
+    } catch (error) {
+        res.status(500).json({ error: "Error calculando Kardex" });
     }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`☁️ Backend Limatco corriendo en http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`☁️ Backend Limatco corriendo en puerto ${PORT}`));
