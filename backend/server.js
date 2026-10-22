@@ -40,15 +40,16 @@ app.post('/api/capturas', async (req, res) => {
         const data = req.body;
         const fechaActual = new Date().toISOString();
 
-        const fila = [
+               const fila = [
             Date.now(),
             fechaActual,
             data.tipo_documento,
             data.numero_documento,
             data.bodega_origen,
             data.sucursal_destino_codigo || "Desconocido",
-            JSON.stringify(data), // El JSON completo
-            data.erp_url
+            JSON.stringify(data), 
+            data.erp_url,
+            "PENDIENTE" // <-- NUEVO: Estado inicial
         ];
 
         await sheets.spreadsheets.values.append({
@@ -63,6 +64,85 @@ app.post('/api/capturas', async (req, res) => {
 
     } catch (error) {
         console.error("❌ Error guardando en Sheets:", error.message);
+        res.status(500).json({ error: "Error interno" });
+    }
+});
+
+// --- ENDPOINT PARA LEER LAS CAPTURAS (Faltaba esto) ---
+app.get('/api/capturas', async (req, res) => {
+    try {
+        const response = await sheets.spreadsheets.values.get({
+            spreadsheetId: SPREADSHEET_ID,
+            range: 'A2:H100', // Lee desde la fila 2 hasta la 100
+        });
+        
+        // Si la hoja está vacía, response.data.values será undefined
+        const filas = response.data.values || [];
+        res.json(filas);
+    } catch (error) {
+        console.error("❌ Error leyendo de Sheets:", error.message);
+        res.status(500).json({ error: "Error leyendo la base de datos" });
+    }
+});
+
+// --- ENDPOINT PARA OBTENER UNA NOTA POR ID ---
+app.get('/api/capturas/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const response = await sheets.spreadsheets.values.get({
+            spreadsheetId: SPREADSHEET_ID,
+            range: 'A2:I1000', // Leemos hasta la columna I (Estado)
+        });
+        
+        const rows = response.data.values || [];
+        const row = rows.find(r => String(r[0]) === String(id));
+        
+        if (!row) return res.status(404).json({ error: "Nota no encontrada" });
+        
+        // Retornamos el JSON parseado y el estado actual
+        const notaData = JSON.parse(row[6]); 
+        res.json({ id: row[0], estado: row[8] || 'PENDIENTE', data: notaData });
+    } catch (error) {
+        console.error("❌ Error obteniendo nota:", error.message);
+        res.status(500).json({ error: "Error interno" });
+    }
+});
+
+// --- ENDPOINT PARA CONFIRMAR PICKING ---
+app.put('/api/capturas/:id/confirmar', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        // 1. Leer la hoja para encontrar en qué fila está ese ID
+        const response = await sheets.spreadsheets.values.get({
+            spreadsheetId: SPREADSHEET_ID,
+            range: 'A2:A1000',
+        });
+        
+        const rows = response.data.values || [];
+        const rowIndex = rows.findIndex(row => String(row[0]) === String(id));
+        
+        if (rowIndex === -1) {
+            return res.status(404).json({ error: "Nota no encontrada" });
+        }
+
+        // rowIndex es 0-based, pero en Google Sheets las filas empiezan en 1. 
+        // Además, empezamos a leer desde la fila 2, así que sumamos +2.
+        const sheetRow = rowIndex + 2;
+
+        // 2. Actualizar la columna I (Estado) de esa fila
+        await sheets.spreadsheets.values.update({
+            spreadsheetId: SPREADSHEET_ID,
+            range: `I${sheetRow}`,
+            valueInputOption: 'USER_ENTERED',
+            requestBody: { values: [["COMPLETADO"]] },
+        });
+
+        console.log(`✅ [Sheets] Nota ID ${id} marcada como COMPLETADA.`);
+        res.json({ status: "OK", mensaje: "Picking confirmado" });
+
+    } catch (error) {
+        console.error("❌ Error confirmando picking:", error.message);
         res.status(500).json({ error: "Error interno" });
     }
 });
