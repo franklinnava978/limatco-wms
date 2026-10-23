@@ -38,6 +38,87 @@ function Login() {
   );
 }
 
+// --- MODAL DE NOTA DE CARGA (Formato ERP) ---
+function NotaCargaModal({ nota, onClose, onPreparar }) {
+  // Parseamos el JSON que viene de la base de datos
+  const data = JSON.parse(nota[6]);
+
+  return (
+    <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.7)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
+      <div style={{ backgroundColor: 'white', width: '900px', maxWidth: '95%', padding: '40px', borderRadius: '8px', maxHeight: '90vh', overflowY: 'auto', fontFamily: 'Arial, sans-serif' }}>
+        
+        {/* Botones de Acción fuera del papel */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginBottom: '20px' }}>
+          <button className="btn btn-danger" onClick={onClose}>✖ Cerrar</button>
+          <button className="btn btn-primary" onClick={onPreparar} style={{backgroundColor: '#059669'}}>🚀 Ir a Preparar (PDA)</button>
+        </div>
+
+        {/* El "Papel" de la Nota de Carga */}
+        <div style={{ border: '2px solid #000', padding: '20px', color: '#000' }}>
+          
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px', alignItems: 'center' }}>
+            <h2 style={{ margin: 0, fontStyle: 'italic', color: '#b91c1c' }}>Limatco</h2>
+            <h3 style={{ margin: 0, textAlign: 'center' }}>NOTA DE CARGA N° {nota[3]}</h3>
+            <div style={{ textAlign: 'right' }}>
+              <strong>EMISIÓN:</strong> {new Date(nota[1]).toLocaleDateString()}
+            </div>
+          </div>
+
+          <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '15px', fontSize: '14px' }}>
+            <tbody>
+              <tr>
+                <td style={{ border: '1px solid #000', padding: '5px' }}><strong>Documento Origen:</strong> {nota[2]} {nota[3]}</td>
+                <td style={{ border: '1px solid #000', padding: '5px' }}><strong>Hora:</strong> {new Date(nota[1]).toLocaleTimeString()}</td>
+                <td style={{ border: '1px solid #000', padding: '5px' }}><strong>Fecha:</strong> {new Date(nota[1]).toLocaleDateString()}</td>
+              </tr>
+              <tr>
+                <td colSpan="2" style={{ border: '1px solid #000', padding: '5px' }}><strong>Sucursal que Despacha:</strong> {nota[4]}</td>
+                <td style={{ border: '1px solid #000', padding: '5px' }}><strong>Destino:</strong> {nota[5]}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px', textAlign: 'center' }}>
+            <thead>
+              <tr style={{ backgroundColor: '#f3f4f6' }}>
+                <th style={{ border: '1px solid #000', padding: '8px' }}>Código</th>
+                <th style={{ border: '1px solid #000', padding: '8px' }}>Descripción</th>
+                <th style={{ border: '1px solid #000', padding: '8px' }}>Bod</th>
+                <th style={{ border: '1px solid #000', padding: '8px' }}>Ubicación en Bodega</th>
+                <th style={{ border: '1px solid #000', padding: '8px' }}>Unidad</th>
+                <th style={{ border: '1px solid #000', padding: '8px' }}>Cantidad</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.lineas && data.lineas.map((l, i) => (
+                <tr key={i}>
+                  <td style={{ border: '1px solid #000', padding: '5px' }}>{l.codigoMaterial}</td>
+                  <td style={{ border: '1px solid #000', padding: '5px', textAlign: 'left' }}>{l.descripcion}</td>
+                  <td style={{ border: '1px solid #000', padding: '5px' }}>{l.bodegaMaterial || 'L03'}</td>
+                  <td style={{ border: '1px solid #000', padding: '5px' }}><strong>{l.ubicacionFisica}</strong></td>
+                  <td style={{ border: '1px solid #000', padding: '5px' }}>{l.unidad}</td>
+                  <td style={{ border: '1px solid #000', padding: '5px', fontWeight: 'bold', fontSize: '16px' }}>{l.cantidad}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <div style={{ marginTop: '20px', border: '1px solid #000', padding: '10px', fontSize: '12px' }}>
+            <p><strong>Observación No Impresa:</strong> {data.destino_texto || 'Sin observaciones'}</p>
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '40px', fontSize: '12px' }}>
+            <div>Despachador Responsable: ______________________</div>
+            <div>Patente: ______________________</div>
+            <div>Hora: ______________________</div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // --- LAYOUT CON SIDEBAR ---
 function AppLayout() {
   const navigate = useNavigate();
@@ -59,8 +140,10 @@ function AppLayout() {
 
 // --- DESPACHOS ---
 // --- DESPACHOS ---
+// --- DESPACHOS ---
 function Despachos() {
   const [notas, setNotas] = useState([]);
+  const [notaSeleccionada, setNotaSeleccionada] = useState(null); // Estado para el modal
   const navigate = useNavigate();
 
   const cargarNotas = async () => {
@@ -68,11 +151,10 @@ function Despachos() {
       const res = await fetch(`${API_URL}/capturas`);
       const data = await res.json();
       const despachos = data.filter(n => {
-        if (n[2] === 'RECEPCION' || n[2] === 'DESPACHO') return false; // Ocultar eventos internos
+        if (n[2] === 'RECEPCION' || n[2] === 'DESPACHO') return false;
         try {
           const json = JSON.parse(n[6]);
           const estado = n[8] || 'PENDIENTE';
-          // Mostramos Notas de Venta / Boletas que NO estén COMPLETADAS
           return json.tipo_flujo === 'OUTBOUND' && json.tipo_documento !== 'DESPACHO' && estado !== 'COMPLETADO';
         } catch(e) { return false; }
       });
@@ -106,7 +188,12 @@ function Despachos() {
                   <td>{nota[3]}</td><td>{nota[4]}</td>
                   <td><span className="badge" style={{backgroundColor: colorBadge, color: 'white'}}>{nota[5] || 'N/A'}</span></td>
                   <td><span className="badge" style={{backgroundColor: colorEstado, color: 'white'}}>{estadoNota}</span></td>
-                  <td><button className="btn btn-primary" onClick={() => navigate(`/app/picking/${nota[0]}`)}>Preparar</button></td>
+                  <td>
+                    {/* CAMBIO: Abre el Modal en lugar de navegar directo */}
+                    <button className="btn btn-primary" onClick={() => setNotaSeleccionada(nota)}>
+                      Preparar (Picking)
+                    </button>
+                  </td>
                 </tr>
               );
             })}
@@ -114,6 +201,18 @@ function Despachos() {
           </tbody>
         </table>
       </div>
+
+      {/* MODAL FLOTANTE */}
+      {notaSeleccionada && (
+        <NotaCargaModal 
+          nota={notaSeleccionada} 
+          onClose={() => setNotaSeleccionada(null)} 
+          onPreparar={() => {
+            setNotaSeleccionada(null); // Cerramos el modal
+            navigate(`/app/picking/${notaSeleccionada[0]}`); // Vamos a la PDA
+          }} 
+        />
+      )}
     </div>
   );
 }
@@ -129,7 +228,7 @@ function Recepciones() {
       const res = await fetch(`${API_URL}/capturas`);
       const data = await res.json();
       const inbound = data.filter(n => {
-        if (n[2] === 'RECEPCION') return false; // Ocultar el evento de recepción física
+        if (n[2] === 'RECEPCION') return false;
         try {
           const json = JSON.parse(n[6]);
           const estado = n[8] || 'PENDIENTE';
@@ -141,17 +240,29 @@ function Recepciones() {
   };
   useEffect(() => { cargarOrdenes(); }, []);
 
+  // Filtro estricto por Número de OC o Proveedor
   const ordenesFiltradas = ordenes.filter(oc => {
-    const search = busqueda.toLowerCase();
-    return String(oc[3] || '').toLowerCase().includes(search) || String(oc[4] || '').toLowerCase().includes(search);
+    const search = busqueda.trim().toLowerCase();
+    const numeroOC = String(oc[3] || '').toLowerCase();
+    const proveedor = String(oc[4] || '').toLowerCase();
+    return numeroOC.includes(search) || proveedor.includes(search);
   });
 
   return (
     <div>
       <div className="header"><h1>🚛 Recepciones (Órdenes de Compra)</h1><button className="btn" onClick={cargarOrdenes} style={{background: '#e5e7eb'}}>🔄 Actualizar</button></div>
+      
+      {/* BARRA DE BÚSQUEDA */}
       <div className="card" style={{ padding: '15px', marginBottom: '15px' }}>
-        <input type="text" placeholder="🔍 Buscar OC o Proveedor..." value={busqueda} onChange={(e) => setBusqueda(e.target.value)} style={{ width: '100%', padding: '12px', fontSize: '16px', borderRadius: '6px', border: '1px solid #d1d5db' }} />
+        <input 
+          type="text" 
+          placeholder="🔍 Buscar por Número de OC o Proveedor..." 
+          value={busqueda}
+          onChange={(e) => setBusqueda(e.target.value)}
+          style={{ width: '100%', padding: '12px', fontSize: '16px', borderRadius: '6px', border: '1px solid #d1d5db' }}
+        />
       </div>
+
       <div className="card">
         <table>
           <thead><tr><th>Fecha</th><th>Documento</th><th>Número OC</th><th>Proveedor</th><th>Destino</th><th>Estado</th><th>Acciones</th></tr></thead>
@@ -168,7 +279,7 @@ function Recepciones() {
                 </tr>
               );
             })}
-            {ordenesFiltradas.length === 0 && <tr><td colSpan="7" style={{textAlign: 'center'}}>No hay OCs pendientes.</td></tr>}
+            {ordenesFiltradas.length === 0 && <tr><td colSpan="7" style={{textAlign: 'center'}}>No se encontraron OCs con esa búsqueda.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -180,6 +291,7 @@ function Recepciones() {
 function Inventario() {
   const [inventario, setInventario] = useState([]);
   const [cargando, setCargando] = useState(true);
+  const [busqueda, setBusqueda] = useState(''); // <-- Nuevo estado
 
   const cargarInventario = async () => {
     setCargando(true);
@@ -193,14 +305,32 @@ function Inventario() {
   };
   useEffect(() => { cargarInventario(); }, []);
 
+  // Filtro por código o descripción
+  const inventarioFiltrado = inventario.filter(item => 
+    item.codigo.toLowerCase().includes(busqueda.toLowerCase()) || 
+    item.descripcion.toLowerCase().includes(busqueda.toLowerCase())
+  );
+
   return (
     <div>
       <div className="header"><h1>📋 Kardex / Inventario Físico</h1><button className="btn" onClick={cargarInventario} style={{background: '#e5e7eb'}}>🔄 Actualizar Stock</button></div>
+      
+      {/* BARRA DE BÚSQUEDA */}
+      <div className="card" style={{ padding: '15px', marginBottom: '15px' }}>
+        <input 
+          type="text" 
+          placeholder="🔍 Buscar por Código de Material o Descripción..." 
+          value={busqueda}
+          onChange={(e) => setBusqueda(e.target.value)}
+          style={{ width: '100%', padding: '12px', fontSize: '16px', borderRadius: '6px', border: '1px solid #d1d5db' }}
+        />
+      </div>
+
       <div className="card">
         <table>
           <thead><tr><th>Código Material</th><th>Descripción</th><th>Stock Actual</th><th>Estado</th></tr></thead>
           <tbody>
-            {inventario.map((item, index) => {
+            {inventarioFiltrado.map((item, index) => {
               let colorStock = '#1f2937'; let badge = 'Normal';
               if (item.stock <= 0) { colorStock = '#dc2626'; badge = 'Sin Stock'; }
               else if (item.stock < 5) { colorStock = '#d97706'; badge = 'Stock Bajo'; }
@@ -212,7 +342,7 @@ function Inventario() {
                 </tr>
               );
             })}
-            {inventario.length === 0 && !cargando && <tr><td colSpan="4" style={{textAlign: 'center'}}>Kardex vacío.</td></tr>}
+            {inventarioFiltrado.length === 0 && !cargando && <tr><td colSpan="4" style={{textAlign: 'center'}}>No se encontraron materiales con esa búsqueda.</td></tr>}
           </tbody>
         </table>
       </div>
