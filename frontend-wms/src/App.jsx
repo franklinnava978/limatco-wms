@@ -237,21 +237,6 @@ function Despachos() {
   );
 }
 
-      {/* MODAL FLOTANTE */}
-      {notaSeleccionada && (
-        <NotaCargaModal 
-          nota={notaSeleccionada} 
-          onClose={() => setNotaSeleccionada(null)} 
-          onPreparar={() => {
-            setNotaSeleccionada(null); // Cerramos el modal
-            navigate(`/app/picking/${notaSeleccionada[0]}`); // Vamos a la PDA
-          }} 
-        />
-      )}
-    </div>
-  );
-}
-
 // --- RECEPCIONES ---
 function Recepciones() {
   const [ordenes, setOrdenes] = useState([]);
