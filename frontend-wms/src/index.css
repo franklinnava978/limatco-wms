@@ -44,3 +44,24 @@ th { background-color: #f9fafb; font-weight: 600; color: #4b5563; }
 .btn-confirmar:disabled { background-color: #9ca3af; cursor: not-allowed; }
 .btn-confirmar:enabled { background-color: #10b981; }
 .btn-confirmar:enabled:hover { background-color: #059669; }
+
+/* --- ESTILOS PARA IMPRESIÓN --- */
+@media print {
+  body * {
+    visibility: hidden; /* Oculta todo */
+  }
+  .print-area, .print-area * {
+    visibility: visible; /* Muestra solo la nota */
+  }
+  .print-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    border: none !important;
+    padding: 0 !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+}

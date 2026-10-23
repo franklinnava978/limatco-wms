@@ -40,21 +40,23 @@ function Login() {
 
 // --- MODAL DE NOTA DE CARGA (Formato ERP) ---
 function NotaCargaModal({ nota, onClose, onPreparar }) {
-  // Parseamos el JSON que viene de la base de datos
   const data = JSON.parse(nota[6]);
 
   return (
     <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.7)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
+      
+      {/* Contenedor principal del modal. Le pusimos maxHeight y overflow para que se pueda scrollear */}
       <div style={{ backgroundColor: 'white', width: '900px', maxWidth: '95%', padding: '40px', borderRadius: '8px', maxHeight: '90vh', overflowY: 'auto', fontFamily: 'Arial, sans-serif' }}>
         
-        {/* Botones de Acción fuera del papel */}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginBottom: '20px' }}>
+        {/* Botones de Acción (Ocultos al imprimir) */}
+        <div className="no-print" style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginBottom: '20px' }}>
           <button className="btn btn-danger" onClick={onClose}>✖ Cerrar</button>
+          <button className="btn" onClick={() => window.print()} style={{backgroundColor: '#f3f4f6', border: '1px solid #d1d5db'}}>🖨️ Imprimir</button>
           <button className="btn btn-primary" onClick={onPreparar} style={{backgroundColor: '#059669'}}>🚀 Ir a Preparar (PDA)</button>
         </div>
 
-        {/* El "Papel" de la Nota de Carga */}
-        <div style={{ border: '2px solid #000', padding: '20px', color: '#000' }}>
+        {/* El "Papel" de la Nota de Carga (Se imprime) */}
+        <div className="print-area" style={{ border: '2px solid #000', padding: '20px', color: '#000' }}>
           
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px', alignItems: 'center' }}>
             <h2 style={{ margin: 0, fontStyle: 'italic', color: '#b91c1c' }}>Limatco</h2>
@@ -139,11 +141,10 @@ function AppLayout() {
 }
 
 // --- DESPACHOS ---
-// --- DESPACHOS ---
-// --- DESPACHOS ---
 function Despachos() {
   const [notas, setNotas] = useState([]);
-  const [notaSeleccionada, setNotaSeleccionada] = useState(null); // Estado para el modal
+  const [notaSeleccionada, setNotaSeleccionada] = useState(null);
+  const [busqueda, setBusqueda] = useState(''); // <-- Nuevo estado de búsqueda
   const navigate = useNavigate();
 
   const cargarNotas = async () => {
@@ -163,14 +164,34 @@ function Despachos() {
   };
   useEffect(() => { cargarNotas(); }, []);
 
+  // Filtro dinámico
+  const notasFiltradas = notas.filter(nota => {
+    const search = busqueda.trim().toLowerCase();
+    return String(nota[3]).toLowerCase().includes(search) || // Número de documento
+           String(nota[4]).toLowerCase().includes(search) || // Origen
+           String(nota[5]).toLowerCase().includes(search);   // Destino
+  });
+
   return (
     <div>
       <div className="header"><h1>🚚 Despachos (Notas de Carga)</h1><button className="btn" onClick={cargarNotas} style={{background: '#e5e7eb'}}>🔄 Actualizar</button></div>
+      
+      {/* BARRA DE BÚSQUEDA */}
+      <div className="card" style={{ padding: '15px', marginBottom: '15px' }}>
+        <input 
+          type="text" 
+          placeholder="🔍 Buscar por Número de Nota, Origen o Destino..." 
+          value={busqueda}
+          onChange={(e) => setBusqueda(e.target.value)}
+          style={{ width: '100%', padding: '12px', fontSize: '16px', borderRadius: '6px', border: '1px solid #d1d5db' }}
+        />
+      </div>
+
       <div className="card">
         <table>
           <thead><tr><th>Fecha</th><th>Documento</th><th>Número</th><th>Origen</th><th>Destino</th><th>Estado</th><th>Acciones</th></tr></thead>
           <tbody>
-            {notas.map((nota, index) => {
+            {notasFiltradas.map((nota, index) => {
               let tipoDespacho = "VALIJA"; let colorBadge = "#3b82f6";
               const estadoNota = nota[8] || 'PENDIENTE';
               const colorEstado = estadoNota === 'PARCIAL' ? '#d97706' : '#3b82f6';
@@ -189,18 +210,32 @@ function Despachos() {
                   <td><span className="badge" style={{backgroundColor: colorBadge, color: 'white'}}>{nota[5] || 'N/A'}</span></td>
                   <td><span className="badge" style={{backgroundColor: colorEstado, color: 'white'}}>{estadoNota}</span></td>
                   <td>
-                    {/* CAMBIO: Abre el Modal en lugar de navegar directo */}
                     <button className="btn btn-primary" onClick={() => setNotaSeleccionada(nota)}>
-                      Preparar (Picking)
+                      Ver Nota
                     </button>
                   </td>
                 </tr>
               );
             })}
-            {notas.length === 0 && <tr><td colSpan="7" style={{textAlign: 'center'}}>No hay despachos pendientes.</td></tr>}
+            {notasFiltradas.length === 0 && <tr><td colSpan="7" style={{textAlign: 'center'}}>No se encontraron despachos con esa búsqueda.</td></tr>}
           </tbody>
         </table>
       </div>
+
+      {/* MODAL FLOTANTE */}
+      {notaSeleccionada && (
+        <NotaCargaModal 
+          nota={notaSeleccionada} 
+          onClose={() => setNotaSeleccionada(null)} 
+          onPreparar={() => {
+            setNotaSeleccionada(null);
+            navigate(`/app/picking/${notaSeleccionada[0]}`);
+          }} 
+        />
+      )}
+    </div>
+  );
+}
 
       {/* MODAL FLOTANTE */}
       {notaSeleccionada && (
