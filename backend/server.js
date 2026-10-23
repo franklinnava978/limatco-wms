@@ -2,20 +2,17 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
-const { google } = require('googleapis');
-const path = require('path');
+const { Pool } = require('pg'); // <-- Driver de PostgreSQL
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
-// --- CONEXIÓN A GOOGLE SHEETS ---
-const auth = new google.auth.GoogleAuth({
-    keyFile: path.join(__dirname, 'credenciales.json'),
-    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+// Conexión a Neon (SSL obligatorio en la nube)
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false } // Necesario para Neon / Azure
 });
-const sheets = google.sheets({ version: 'v4', auth });
-const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID;
 
 // --- LOGIN ---
 app.post('/api/login', async (req, res) => {
@@ -27,7 +24,7 @@ app.post('/api/login', async (req, res) => {
     res.status(401).json({ error: "Credenciales incorrectas" });
 });
 
-/// --- CAPTURA (EXTENSIÓN) ---
+// --- CAPTURA (EXTENSIÓN) ---
 app.post('/api/capturas', async (req, res) => {
     const authHeader = req.headers.authorization;
     if (!authHeader) return res.status(403).json({ error: "No autorizado" });
@@ -37,40 +34,32 @@ app.post('/api/capturas', async (req, res) => {
         jwt.verify(token, process.env.JWT_SECRET);
 
         const data = req.body;
-        const fechaActual = new Date().toISOString();
 
-        // 🛑 CANDADO DE SEGURIDAD: Evitar OCs duplicadas
+        // 🛑 CANDADO ANTI-DUPLICADOS (ahora en SQL)
         if (data.tipo_documento === 'ORDEN_COMPRA') {
-            const response = await sheets.spreadsheets.values.get({
-                spreadsheetId: SPREADSHEET_ID, range: 'A2:K1000',
-            });
-            const rows = response.data.values || [];
-            
-            // Buscamos si ya hay una OC con ese mismo número que NO esté completada
-            const ocExistente = rows.find(row => 
-                row[3] === data.numero_documento && 
-                (row[8] === 'PENDIENTE' || row[8] === 'PARCIAL')
+            const result = await pool.query(
+                'SELECT id FROM documentos WHERE numero_documento = $1 AND tipo_documento = $2 AND estado IN ($3, $4)',
+                [data.numero_documento, 'ORDEN_COMPRA', 'PENDIENTE', 'PARCIAL']
             );
-
-            if (ocExistente) {
-                console.log(`⚠️ [WMS] La OC ${data.numero_documento} ya está en el sistema. Captura ignorada.`);
-                return res.json({ status: "OK", mensaje: "OC ya existente", id: ocExistente[0] });
+            if (result.rows.length > 0) {
+                console.log(`⚠️ [WMS] La OC ${data.numero_documento} ya existe. Captura ignorada.`);
+                return res.json({ status: "OK", mensaje: "OC ya existente", id: result.rows[0].id });
             }
         }
 
-        // Si no existe, la guardamos normalmente
-        const fila = [
-            Date.now(), fechaActual, data.tipo_documento, data.numero_documento,
-            data.bodega_origen, data.sucursal_destino_codigo || "Desconocido",
-            JSON.stringify(data), data.erp_url, "PENDIENTE", data.tipo_flujo || "OUTBOUND", ""
+        const query = `
+            INSERT INTO documentos 
+            (tipo_documento, numero_documento, bodega_origen, sucursal_destino, json_completo, erp_url, estado, tipo_flujo)
+            VALUES ($1, $2, $3, $4, $5, $6, 'PENDIENTE', $7) RETURNING id
+        `;
+        const values = [
+            data.tipo_documento, data.numero_documento, data.bodega_origen,
+            data.sucursal_destino_codigo || "Desconocido", JSON.stringify(data),
+            data.erp_url, data.tipo_flujo || "OUTBOUND"
         ];
-
-        await sheets.spreadsheets.values.append({
-            spreadsheetId: SPREADSHEET_ID, range: 'A1', valueInputOption: 'USER_ENTERED',
-            requestBody: { values: [fila] },
-        });
-
-        res.json({ status: "OK", mensaje: "Guardado", id: fila[0] });
+        
+        const result = await pool.query(query, values);
+        res.json({ status: "OK", mensaje: "Guardado", id: result.rows[0].id });
     } catch (error) {
         console.error("❌ Error captura:", error.message);
         res.status(500).json({ error: "Error interno" });
@@ -80,30 +69,10 @@ app.post('/api/capturas', async (req, res) => {
 // --- OBTENER CAPTURAS ---
 app.get('/api/capturas', async (req, res) => {
     try {
-        const response = await sheets.spreadsheets.values.get({
-            spreadsheetId: SPREADSHEET_ID, range: 'A2:K1000',
-        });
-        res.json(response.data.values || []);
+        const result = await pool.query('SELECT * FROM documentos ORDER BY fecha DESC');
+        res.json(result.rows);
     } catch (error) {
         res.status(500).json({ error: "Error leyendo" });
-    }
-});
-
-// --- OBTENER UNA CAPTURA POR ID ---
-app.get('/api/capturas/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const response = await sheets.spreadsheets.values.get({
-            spreadsheetId: SPREADSHEET_ID, range: 'A2:K1000',
-        });
-        const rows = response.data.values || [];
-        const row = rows.find(r => String(r[0]) === String(id));
-        
-        if (!row) return res.status(404).json({ error: "No encontrada" });
-        
-        res.json({ id: row[0], estado: row[8] || 'PENDIENTE', data: JSON.parse(row[6]) });
-    } catch (error) {
-        res.status(500).json({ error: "Error interno" });
     }
 });
 
@@ -111,19 +80,7 @@ app.get('/api/capturas/:id', async (req, res) => {
 app.put('/api/capturas/:id/confirmar', async (req, res) => {
     try {
         const { id } = req.params;
-        const response = await sheets.spreadsheets.values.get({
-            spreadsheetId: SPREADSHEET_ID, range: 'A2:A1000',
-        });
-        const rows = response.data.values || [];
-        const rowIndex = rows.findIndex(row => String(row[0]) === String(id));
-        
-        if (rowIndex === -1) return res.status(404).json({ error: "No encontrada" });
-
-        await sheets.spreadsheets.values.update({
-            spreadsheetId: SPREADSHEET_ID, range: `I${rowIndex + 2}`,
-            valueInputOption: 'USER_ENTERED', requestBody: { values: [["COMPLETADO"]] },
-        });
-
+        await pool.query('UPDATE documentos SET estado = $1 WHERE id = $2', ['COMPLETADO', id]);
         res.json({ status: "OK" });
     } catch (error) {
         res.status(500).json({ error: "Error interno" });
@@ -134,55 +91,27 @@ app.put('/api/capturas/:id/confirmar', async (req, res) => {
 app.post('/api/recepciones', async (req, res) => {
     try {
         const { oc_id, oc_numero, proveedor, items, esCompleta } = req.body;
-        const fechaActual = new Date().toISOString();
-        const recId = Date.now();
 
-        // 🛑 CANDADO DE SEGURIDAD: Verificar estado actual de la OC
-        const response = await sheets.spreadsheets.values.get({
-            spreadsheetId: SPREADSHEET_ID, range: 'A2:K1000',
-        });
-        const rows = response.data.values || [];
-        const rowIndex = rows.findIndex(row => String(row[0]) === String(oc_id));
-
-        if (rowIndex === -1) {
-            return res.status(404).json({ error: "OC no encontrada" });
+        // 1. Verificar que la OC no esté ya completada
+        const ocCheck = await pool.query('SELECT estado FROM documentos WHERE id = $1', [oc_id]);
+        if (ocCheck.rows[0]?.estado === 'COMPLETADO') {
+            return res.status(400).json({ error: "Esta OC ya fue recibida en su totalidad." });
         }
 
-        const estadoActual = rows[rowIndex][8] || 'PENDIENTE';
-        if (estadoActual === 'COMPLETADO') {
-            return res.status(400).json({ error: "Esta Orden de Compra ya fue recibida en su totalidad." });
-        }
-
-        // Si no hay items recibidos, no hacemos nada
-        if (!items || items.length === 0) {
-            return res.status(400).json({ error: "No se ingresaron cantidades a recibir." });
-        }
-
-        // 1. Guardamos el evento de Recepción
+        // 2. Insertar el evento de Recepción (Inbound)
         const jsonRecepcion = {
-            tipo_flujo: "INBOUND",
-            tipo_documento: "RECEPCION",
-            numero_documento: oc_numero,
-            bodega_origen: proveedor,
-            lineas: items
+            tipo_flujo: "INBOUND", tipo_documento: "RECEPCION",
+            numero_documento: oc_numero, bodega_origen: proveedor, lineas: items
         };
+        await pool.query(
+            `INSERT INTO documentos (tipo_documento, numero_documento, bodega_origen, sucursal_destino, json_completo, estado, tipo_flujo, referencia_oc_id)
+             VALUES ($1, $2, $3, $4, $5, 'COMPLETADO', 'INBOUND', $6)`,
+            ['RECEPCION', oc_numero, proveedor, 'MUELLE', JSON.stringify(jsonRecepcion), oc_id]
+        );
 
-        const filaRecepcion = [
-            recId, fechaActual, "RECEPCION", oc_numero, proveedor, "MUELLE",
-            JSON.stringify(jsonRecepcion), "", "COMPLETADO", "INBOUND", oc_id
-        ];
-
-        await sheets.spreadsheets.values.append({
-            spreadsheetId: SPREADSHEET_ID, range: 'A1', valueInputOption: 'USER_ENTERED',
-            requestBody: { values: [filaRecepcion] },
-        });
-
-        // 2. Actualizamos estado de la OC original
+        // 3. Actualizar estado de la OC original
         const nuevoEstado = esCompleta ? "COMPLETADO" : "PARCIAL";
-        await sheets.spreadsheets.values.update({
-            spreadsheetId: SPREADSHEET_ID, range: `I${rowIndex + 2}`,
-            valueInputOption: 'USER_ENTERED', requestBody: { values: [[nuevoEstado]] },
-        });
+        await pool.query('UPDATE documentos SET estado = $1 WHERE id = $2', [nuevoEstado, oc_id]);
 
         res.json({ status: "OK" });
     } catch (error) {
@@ -191,97 +120,58 @@ app.post('/api/recepciones', async (req, res) => {
     }
 });
 
-// --- REGISTRAR DESPACHO (SALIDA PARCIAL O TOTAL) ---
-app.post('/api/despachos', async (req, res) => {
-    try {
-        const { nota_id, nota_numero, origen, destino, items, esCompleta } = req.body;
-
-        // 1. Verificar que la nota no esté ya completada
-        const response = await sheets.spreadsheets.values.get({
-            spreadsheetId: SPREADSHEET_ID, range: 'A2:K1000',
-        });
-        const rows = response.data.values || [];
-        const rowIndex = rows.findIndex(row => String(row[0]) === String(nota_id));
-
-        if (rowIndex === -1) return res.status(404).json({ error: "Nota no encontrada" });
-        if (rows[rowIndex][8] === 'COMPLETADO') return res.status(400).json({ error: "Esta nota ya fue despachada en su totalidad." });
-
-        // 2. Guardamos el evento de Despacho
-        const fechaActual = new Date().toISOString();
-        const jsonDespacho = {
-            tipo_flujo: "OUTBOUND",
-            tipo_documento: "DESPACHO",
-            numero_documento: nota_numero,
-            bodega_origen: origen,
-            sucursal_destino_codigo: destino,
-            lineas: items
-        };
-
-        const fila = [
-            Date.now(), fechaActual, "DESPACHO", nota_numero, origen, destino,
-            JSON.stringify(jsonDespacho), "", "COMPLETADO", "OUTBOUND", nota_id
-        ];
-
-        await sheets.spreadsheets.values.append({
-            spreadsheetId: SPREADSHEET_ID, range: 'A1', valueInputOption: 'USER_ENTERED',
-            requestBody: { values: [fila] },
-        });
-
-        // 3. Actualizamos estado de la Nota original
-        const nuevoEstado = esCompleta ? "COMPLETADO" : "PARCIAL";
-        await sheets.spreadsheets.values.update({
-            spreadsheetId: SPREADSHEET_ID, range: `I${rowIndex + 2}`,
-            valueInputOption: 'USER_ENTERED', requestBody: { values: [[nuevoEstado]] },
-        });
-
-        res.json({ status: "OK" });
-    } catch (error) {
-        console.error("❌ Error despacho:", error.message);
-        res.status(500).json({ error: "Error interno" });
-    }
-});
-
-// --- KARDEX (INVENTARIO MATEMÁTICO) ---
+// --- KARDEX (INVENTARIO MATEMÁTICO POR BODEGA) ---
 app.get('/api/inventario', async (req, res) => {
     try {
-        const response = await sheets.spreadsheets.values.get({
-            spreadsheetId: SPREADSHEET_ID, range: 'A2:K1000',
-        });
-        const rows = response.data.values || [];
+        const result = await pool.query("SELECT * FROM documentos WHERE estado = 'COMPLETADO'");
         const kardex = {};
 
-        rows.forEach(row => {
-            const estado = row[8]; 
-            const esRecepcion = row[2] === 'RECEPCION';
-            const tipoFlujo = row[9] || 'OUTBOUND';
+        result.rows.forEach(row => {
+            const data = JSON.parse(row.json_completo);
+            if (!data.lineas) return;
+
+            const esRecepcion = row.tipo_flujo === 'INBOUND' || row.tipo_documento === 'RECEPCION';
+            const esDespacho = row.tipo_documento === 'DESPACHO';
             
-            // Solo procesamos si está COMPLETADO
-            if (estado !== 'COMPLETADO') return;
+            // Ignoramos Notas de Venta originales para no restar doble
+            if (!esRecepcion && !esDespacho) return;
 
-            try {
-                const data = JSON.parse(row[6]);
-                if (!data.lineas) return;
+            // Normalizamos la bodega
+            const bodegaRaw = esRecepcion ? String(row.sucursal_destino).toUpperCase() : String(row.bodega_origen).toUpperCase();
+            let bodega = 'OTRA';
+            if (bodegaRaw.includes('VESPUCIO') || bodegaRaw.includes('L-03') || bodegaRaw === 'L03') bodega = 'L-03';
+            else if (bodegaRaw.includes('BLA') || bodegaRaw.includes('L-01') || bodegaRaw === 'L01') bodega = 'L-01';
 
-                data.lineas.forEach(linea => {
-                    const cod = linea.codigoMaterial;
-                    if (!kardex[cod]) {
-                        kardex[cod] = { codigo: cod, descripcion: linea.descripcion, stock: 0 };
-                    }
-                    
-                    if (esRecepcion || tipoFlujo === 'INBOUND') {
-                        kardex[cod].stock += linea.cantidad;
-                    } else {
-                        kardex[cod].stock -= linea.cantidad;
-                    }
-                });
-            } catch (e) { }
+            data.lineas.forEach(linea => {
+                const cod = linea.codigoMaterial;
+                if (!kardex[cod]) {
+                    kardex[cod] = { codigo: cod, descripcion: linea.descripcion, stockL01: 0, stockL03: 0, stockOtra: 0, total: 0 };
+                }
+                
+                const cantidad = linea.cantidad;
+                if (esRecepcion) {
+                    if (bodega === 'L-01') kardex[cod].stockL01 += cantidad;
+                    else if (bodega === 'L-03') kardex[cod].stockL03 += cantidad;
+                    else kardex[cod].stockOtra += cantidad;
+                } else if (esDespacho) {
+                    if (bodega === 'L-01') kardex[cod].stockL01 -= cantidad;
+                    else if (bodega === 'L-03') kardex[cod].stockL03 -= cantidad;
+                    else kardex[cod].stockOtra -= cantidad;
+                }
+            });
+        });
+
+        // Calculamos el total consolidado
+        Object.values(kardex).forEach(item => {
+            item.total = item.stockL01 + item.stockL03 + item.stockOtra;
         });
 
         res.json(Object.values(kardex));
     } catch (error) {
+        console.error("❌ Error calculando Kardex:", error.message);
         res.status(500).json({ error: "Error calculando Kardex" });
     }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`☁️ Backend Limatco corriendo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`☁️ Backend Limatco (PostgreSQL) en puerto ${PORT}`));
