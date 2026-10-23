@@ -58,6 +58,7 @@ function AppLayout() {
 }
 
 // --- DESPACHOS ---
+// --- DESPACHOS ---
 function Despachos() {
   const [notas, setNotas] = useState([]);
   const navigate = useNavigate();
@@ -67,11 +68,13 @@ function Despachos() {
       const res = await fetch(`${API_URL}/capturas`);
       const data = await res.json();
       const despachos = data.filter(n => {
-        if (n[2] === 'RECEPCION') return false; // NUNCA mostrar recepciones aquí
+        if (n[2] === 'RECEPCION' || n[2] === 'DESPACHO') return false; // Ocultar eventos internos
         try {
           const json = JSON.parse(n[6]);
-          return json.tipo_flujo !== 'INBOUND';
-        } catch(e) { return true; }
+          const estado = n[8] || 'PENDIENTE';
+          // Mostramos Notas de Venta / Boletas que NO estén COMPLETADAS
+          return json.tipo_flujo === 'OUTBOUND' && json.tipo_documento !== 'DESPACHO' && estado !== 'COMPLETADO';
+        } catch(e) { return false; }
       });
       setNotas(despachos);
     } catch (err) { console.error(err); }
@@ -83,10 +86,13 @@ function Despachos() {
       <div className="header"><h1>🚚 Despachos (Notas de Carga)</h1><button className="btn" onClick={cargarNotas} style={{background: '#e5e7eb'}}>🔄 Actualizar</button></div>
       <div className="card">
         <table>
-          <thead><tr><th>Fecha</th><th>Documento</th><th>Número</th><th>Origen</th><th>Destino</th><th>Acciones</th></tr></thead>
+          <thead><tr><th>Fecha</th><th>Documento</th><th>Número</th><th>Origen</th><th>Destino</th><th>Estado</th><th>Acciones</th></tr></thead>
           <tbody>
             {notas.map((nota, index) => {
               let tipoDespacho = "VALIJA"; let colorBadge = "#3b82f6";
+              const estadoNota = nota[8] || 'PENDIENTE';
+              const colorEstado = estadoNota === 'PARCIAL' ? '#d97706' : '#3b82f6';
+
               try {
                 const json = JSON.parse(nota[6]);
                 tipoDespacho = json.tipo_despacho || "VALIJA";
@@ -99,11 +105,12 @@ function Despachos() {
                   <td><strong>{nota[2]}</strong><br/><span style={{fontSize: '10px', color: '#666'}}>{tipoDespacho}</span></td>
                   <td>{nota[3]}</td><td>{nota[4]}</td>
                   <td><span className="badge" style={{backgroundColor: colorBadge, color: 'white'}}>{nota[5] || 'N/A'}</span></td>
+                  <td><span className="badge" style={{backgroundColor: colorEstado, color: 'white'}}>{estadoNota}</span></td>
                   <td><button className="btn btn-primary" onClick={() => navigate(`/app/picking/${nota[0]}`)}>Preparar</button></td>
                 </tr>
               );
             })}
-            {notas.length === 0 && <tr><td colSpan="6" style={{textAlign: 'center'}}>No hay despachos.</td></tr>}
+            {notas.length === 0 && <tr><td colSpan="7" style={{textAlign: 'center'}}>No hay despachos pendientes.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -214,60 +221,148 @@ function Inventario() {
 }
 
 // --- PICKING (PDA) ---
+// --- PICKING (PDA CON DESPACHOS PARCIALES) ---
 function Picking() {
   const { id } = useParams(); const navigate = useNavigate();
-  const [notaData, setNotaData] = useState(null); const [estadoActual, setEstadoActual] = useState('PENDIENTE');
-  const [cargando, setCargando] = useState(true); const [completado, setCompletado] = useState(false);
-  const [scannedLines, setScannedLines] = useState([]); const [scanInput, setScanInput] = useState('');
+  const [notaData, setNotaData] = useState(null);
+  const [cargando, setCargando] = useState(true);
+  const [completado, setCompletado] = useState(false);
+  
+  const [cantidadesDespachadas, setCantidadesDespachadas] = useState([]);
+  const [cantidadesPrevias, setCantidadesPrevias] = useState({});
 
   useEffect(() => {
-    fetch(`${API_URL}/capturas/${id}`).then(res => res.json()).then(data => {
-      setNotaData(data.data); setEstadoActual(data.estado); setCargando(false);
+    // 1. Buscamos la nota original
+    fetch(`${API_URL}/capturas/${id}`).then(res => res.json()).then(nota => {
+      setNotaData(nota.data);
+      
+      // 2. Buscamos si hay despachos previos de esta nota
+      fetch(`${API_URL}/capturas`).then(res => res.json()).then(todas => {
+        const previas = {};
+        todas.forEach(fila => {
+          // Fila[10] es la referencia a la nota original
+          if (fila[10] === String(id) && fila[2] === 'DESPACHO') {
+            JSON.parse(fila[6]).lineas.forEach(l => {
+              previas[l.codigoMaterial] = (previas[l.codigoMaterial] || 0) + l.cantidad;
+            });
+          }
+        });
+        setCantidadesPrevias(previas);
+        
+        // Inicializamos las cantidades a despachar en 0
+        setCantidadesDespachadas(nota.data.lineas.map(() => 0));
+        setCargando(false);
+      });
     }).catch(err => { console.error(err); setCargando(false); });
   }, [id]);
 
-  const handleScan = (e) => {
-    e.preventDefault(); if (!scanInput || !notaData) return;
-    const index = notaData.lineas.findIndex((l, i) => l.codigoMaterial.includes(scanInput.trim()) && !scannedLines.includes(i));
-    if (index !== -1) setScannedLines([...scannedLines, index]); else alert("Material no encontrado.");
-    setScanInput('');
+  const handleCantidadChange = (index, valor) => {
+    const nuevas = [...cantidadesDespachadas];
+    nuevas[index] = parseFloat(valor) || 0;
+    setCantidadesDespachadas(nuevas);
   };
 
-  const confirmarPicking = async () => {
+  const confirmarDespacho = async () => {
     setCargando(true);
+    // Preparamos los items que realmente se están llevando
+    const items = notaData.lineas.map((l, i) => ({
+      codigoMaterial: l.codigoMaterial,
+      descripcion: l.descripcion,
+      ubicacionFisica: l.ubicacionFisica,
+      cantidad: cantidadesDespachadas[i]
+    })).filter(item => item.cantidad > 0);
+
+    if (items.length === 0) {
+      alert("Debes ingresar al menos una cantidad mayor a 0 para despachar.");
+      setCargando(false);
+      return;
+    }
+
+    // Verificamos si con esto se completa la nota
+    let esCompleta = true;
+    notaData.lineas.forEach((l, i) => {
+      const yaDespachado = cantidadesPrevias[l.codigoMaterial] || 0;
+      if ((yaDespachado + cantidadesDespachadas[i]) < l.cantidad) esCompleta = false;
+    });
+
     try {
-      const res = await fetch(`${API_URL}/capturas/${id}/confirmar`, { method: 'PUT' });
+      const res = await fetch(`${API_URL}/despachos`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          nota_id: id,
+          nota_numero: notaData.numero_documento,
+          origen: notaData.bodega_origen,
+          destino: notaData.sucursal_destino_codigo,
+          items: items,
+          esCompleta
+        })
+      });
       if (res.ok) { setCompletado(true); setTimeout(() => navigate('/app/despachos'), 2000); }
+      else { const errorData = await res.json(); alert(errorData.error || "Error."); setCargando(false); }
     } catch (err) { alert("Error."); setCargando(false); }
   };
 
   if (cargando && !notaData) return <h2>Cargando...</h2>;
   if (!notaData) return <h2>Error al cargar.</h2>;
-  if (completado) return <div style={{textAlign: 'center', marginTop: '50px'}}><h1 style={{color: '#065f46', fontSize: '40px'}}>✅ ¡Completado!</h1></div>;
+  if (completado) return <div style={{textAlign: 'center', marginTop: '50px'}}><h1 style={{color: '#065f46', fontSize: '40px'}}>✅ ¡Despacho Registrado!</h1></div>;
 
   let bgColor = notaData.tipo_despacho === 'RETIRO_TIENDA' ? '#d97706' : notaData.tipo_despacho === 'FLETE' ? '#7c3aed' : '#005A9E';
-  const todoEscaneado = scannedLines.length === notaData.lineas.length;
+  
+  // Verificamos si ya se despachó todo para mostrar la pantalla verde
+  const todoDespachado = notaData.lineas.every(l => (cantidadesPrevias[l.codigoMaterial] || 0) >= l.cantidad);
 
   return (
-    <div style={{ maxWidth: '600px', margin: '0 auto' }}>
+    <div style={{ maxWidth: '700px', margin: '0 auto' }}>
       <div className="pda-header" style={{ backgroundColor: bgColor }}>
         <div><h1 style={{ fontSize: '20px', margin: 0 }}>{notaData.tipo_despacho}</h1><p style={{ margin: 0, fontSize: '14px' }}>{notaData.numero_documento}</p></div>
         <button className="btn" style={{backgroundColor: 'rgba(255,255,255,0.2)', color: 'white'}} onClick={() => navigate('/app/despachos')}>✖</button>
       </div>
-      {estadoActual === 'PENDIENTE' && <form onSubmit={handleScan}><input type="text" className="scanner-input" placeholder="🔍 Escanear..." value={scanInput} onChange={(e) => setScanInput(e.target.value)} autoFocus /></form>}
-      <div>
-        {notaData.lineas.map((linea, i) => (
-          <div key={i} className={`pda-card ${scannedLines.includes(i) ? 'scanned' : ''}`}>
-            <div><div className="pda-ubicacion">{linea.ubicacionFisica}</div><div className="pda-material">{linea.codigoMaterial} - {linea.descripcion}</div></div>
-            <div style={{ textAlign: 'right' }}><div className="pda-cantidad">{linea.cantidad}</div><div style={{ fontSize: '12px', color: '#6b7280' }}>{linea.unidad}</div></div>
+
+      {todoDespachado ? (
+        <div className="card" style={{textAlign: 'center', padding: '40px', backgroundColor: '#ecfdf5', border: '2px solid #10b981'}}>
+          <h2 style={{color: '#065f46'}}>✅ Nota Completamente Despachada</h2>
+          <button className="btn btn-primary" onClick={() => navigate('/app/despachos')} style={{marginTop: '20px'}}>Volver</button>
+        </div>
+      ) : (
+        <>
+          <div className="card">
+            <table>
+              <thead><tr><th>Material</th><th>Ubicación</th><th>Pedido</th><th>Falta</th><th>Despachar</th></tr></thead>
+              <tbody>
+                {notaData.lineas.map((linea, i) => {
+                  const yaDespachado = cantidadesPrevias[linea.codigoMaterial] || 0;
+                  const falta = linea.cantidad - yaDespachado;
+                  
+                  if (falta <= 0) return null; // Ocultar lo que ya se fue
+
+                  return (
+                    <tr key={i}>
+                      <td><strong>{linea.codigoMaterial}</strong><br/><span style={{fontSize:'12px', color:'#666'}}>{linea.descripcion}</span></td>
+                      <td><strong style={{color: '#005A9E', fontSize: '16px'}}>{linea.ubicacionFisica}</strong></td>
+                      <td>{linea.cantidad}</td>
+                      <td style={{color: '#dc2626', fontWeight: 'bold', fontSize: '18px'}}>{falta}</td>
+                      <td>
+                        <input 
+                          type="number" 
+                          value={cantidadesDespachadas[i] || 0} 
+                          onChange={(e) => handleCantidadChange(i, e.target.value)} 
+                          max={falta} min={0}
+                          style={{ width: '80px', padding: '10px', fontSize: '18px', textAlign: 'center', border: '2px solid #3b82f6', borderRadius: '6px' }} 
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-        ))}
-      </div>
-      <div style={{ marginTop: '30px', marginBottom: '50px' }}>
-        <button className="btn-confirmar" onClick={confirmarPicking} disabled={!todoEscaneado || estadoActual === 'COMPLETADO' || cargando}>
-          {estadoActual === 'COMPLETADO' ? "YA COMPLETADO" : todoEscaneado ? "✅ CONFIRMAR DESPACHO" : `FALTAN ${notaData.lineas.length - scannedLines.length}`}
-        </button>
-      </div>
+          <div style={{ marginTop: '20px', marginBottom: '50px' }}>
+            <button className="btn-confirmar" onClick={confirmarDespacho} disabled={cargando} style={{ backgroundColor: '#059669' }}>
+              ✅ GUARDAR DESPACHO
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

@@ -191,6 +191,56 @@ app.post('/api/recepciones', async (req, res) => {
     }
 });
 
+// --- REGISTRAR DESPACHO (SALIDA PARCIAL O TOTAL) ---
+app.post('/api/despachos', async (req, res) => {
+    try {
+        const { nota_id, nota_numero, origen, destino, items, esCompleta } = req.body;
+
+        // 1. Verificar que la nota no esté ya completada
+        const response = await sheets.spreadsheets.values.get({
+            spreadsheetId: SPREADSHEET_ID, range: 'A2:K1000',
+        });
+        const rows = response.data.values || [];
+        const rowIndex = rows.findIndex(row => String(row[0]) === String(nota_id));
+
+        if (rowIndex === -1) return res.status(404).json({ error: "Nota no encontrada" });
+        if (rows[rowIndex][8] === 'COMPLETADO') return res.status(400).json({ error: "Esta nota ya fue despachada en su totalidad." });
+
+        // 2. Guardamos el evento de Despacho
+        const fechaActual = new Date().toISOString();
+        const jsonDespacho = {
+            tipo_flujo: "OUTBOUND",
+            tipo_documento: "DESPACHO",
+            numero_documento: nota_numero,
+            bodega_origen: origen,
+            sucursal_destino_codigo: destino,
+            lineas: items
+        };
+
+        const fila = [
+            Date.now(), fechaActual, "DESPACHO", nota_numero, origen, destino,
+            JSON.stringify(jsonDespacho), "", "COMPLETADO", "OUTBOUND", nota_id
+        ];
+
+        await sheets.spreadsheets.values.append({
+            spreadsheetId: SPREADSHEET_ID, range: 'A1', valueInputOption: 'USER_ENTERED',
+            requestBody: { values: [fila] },
+        });
+
+        // 3. Actualizamos estado de la Nota original
+        const nuevoEstado = esCompleta ? "COMPLETADO" : "PARCIAL";
+        await sheets.spreadsheets.values.update({
+            spreadsheetId: SPREADSHEET_ID, range: `I${rowIndex + 2}`,
+            valueInputOption: 'USER_ENTERED', requestBody: { values: [[nuevoEstado]] },
+        });
+
+        res.json({ status: "OK" });
+    } catch (error) {
+        console.error("❌ Error despacho:", error.message);
+        res.status(500).json({ error: "Error interno" });
+    }
+});
+
 // --- KARDEX (INVENTARIO MATEMÁTICO) ---
 app.get('/api/inventario', async (req, res) => {
     try {
