@@ -4,8 +4,8 @@ function extraerDatosNota() {
   const url = new URL(window.location.href);
   const textoPagina = document.body.innerText;
 
-  // ==========================================
-  // FLUJO 1: ORDEN DE COMPRA (INBOUND)
+    // ==========================================
+  // FLUJO 1: ORDEN DE COMPRA (INBOUND / RECEPCIÓN)
   // ==========================================
   if (url.href.includes("VisorRS.aspx") || url.href.includes("OrdenCompra") || textoPagina.includes("Orden Compra")) {
     
@@ -24,51 +24,53 @@ function extraerDatosNota() {
     const lineas = [];
     let tablaProductos = null;
     
-    // Buscamos la tabla correcta
+    // Buscamos CUALQUIER tabla que contenga la palabra "Código"
     document.querySelectorAll("table").forEach(tabla => {
-      const txt = tabla.innerText.toUpperCase();
-      // Buscamos "CANT" y "CÓDIGO" que están en ambos formatos
-      if (txt.includes("CÓDIGO") && txt.includes("CANT")) {
+      if (tabla.innerText.includes("Código") || tabla.innerText.includes("CÓDIGO")) {
         tablaProductos = tabla;
       }
     });
 
     if (tablaProductos) {
-      tablaProductos.querySelectorAll("tr").forEach(fila => {
+      const filas = tablaProductos.querySelectorAll("tr");
+      let idxCod = 0, idxDesc = 1, idxCant = 4; // Valores por defecto para el formato HTML
+
+      filas.forEach(fila => {
         const celdas = fila.querySelectorAll("td");
         
-        // FORMATO 1 (HTML - Tabla con columnas separadas)
-        if (celdas.length >= 6 && celdas[0].innerText.includes("Código") === false) {
-          const codMat = celdas[0]?.innerText.trim();
-          const cantStr = celdas[4]?.innerText.trim();
+        // Si es la fila de cabecera, mapeamos los índices exactos
+        if (fila.innerText.includes("Código") && fila.innerText.includes("Descripción")) {
+          celdas.forEach((celda, i) => {
+            const txt = celda.innerText.toUpperCase().trim();
+            if (txt.includes("CÓDIGO")) idxCod = i;
+            if (txt.includes("DESCRIPCIÓN")) idxDesc = i;
+            if (txt === "CANT" || txt.includes("CANTIDAD")) idxCant = i;
+          });
+          return; // Saltamos la cabecera
+        }
+
+        // Si es una fila de producto
+        if (celdas.length >= 5) {
+          const codMat = celdas[idxCod]?.innerText.trim();
+          let cantStr = celdas[idxCant]?.innerText.replace(",", ".").trim();
           
-          if (codMat && !isNaN(parseFloat(cantStr))) {
+          // Validar que no sea la cabecera y que la cantidad sea un número
+          if (codMat && codMat !== "Código" && !isNaN(parseFloat(cantStr))) {
             lineas.push({
               cantidad: parseFloat(cantStr),
               codigoMaterial: codMat,
-              descripcion: celdas[1]?.innerText.trim() || "",
-              ubicacionFisica: "MUELLE_RECEPCION",
-              unidad: "UN"
-            });
-          }
-        } 
-        // FORMATO 2 (Visor - Texto plano dentro de una celda)
-        else if (celdas.length === 1) {
-          const textoFila = celdas[0].innerText.trim();
-          // Buscamos patrones como: "1 90251080 L0688M Monomando..."
-          const matchTexto = textoFila.match(/^(\d+)\s+([A-Z0-9]+)\s+([A-Z0-9]+)\s+(.+)$/i);
-          if (matchTexto) {
-            lineas.push({
-              cantidad: parseFloat(matchTexto[1]),
-              codigoProveedor: matchTexto[2].trim(),
-              codigoMaterial: matchTexto[3].trim(),
-              descripcion: matchTexto[4].trim(),
+              descripcion: celdas[idxDesc]?.innerText.trim() || "",
               ubicacionFisica: "MUELLE_RECEPCION",
               unidad: "UN"
             });
           }
         }
       });
+    }
+
+    // --- DEBUG DE EMERGENCIA ---
+    if (lineas.length === 0) {
+      console.log("🔎 DEBUG: Filas crudas encontradas en la tabla:", tablaProductos ? tablaProductos.innerText : "No se encontró tabla");
     }
 
     return {
