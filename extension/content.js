@@ -5,16 +5,16 @@ function extraerDatosNota() {
   const textoPagina = document.body.innerText;
 
   // ==========================================
-  // FLUJO 1: ORDEN DE COMPRA (INBOUND / RECEPCIÓN)
+  // FLUJO 1: ORDEN DE COMPRA (INBOUND)
   // ==========================================
-  if (url.href.includes("VisorRS.aspx") || textoPagina.includes("Orden Compra")) {
+  if (url.href.includes("VisorRS.aspx") || url.href.includes("OrdenCompra") || textoPagina.includes("Orden Compra")) {
     
     let numeroDocumento = "DESCONOCIDO";
     const matchOC = textoPagina.match(/Orden Compra\s*(\d+)/i);
     if (matchOC) numeroDocumento = matchOC[1].trim();
 
     let proveedor = "PROVEEDOR_NO_DETECTADO";
-    const matchProv = textoPagina.match(/Señor\(es\):\s*\n?\s*([^\n]+)/i);
+    const matchProv = textoPagina.match(/(?:Señor\(es\):|Razón Social:)\s*([^\n]+)/i);
     if (matchProv) proveedor = matchProv[1].trim();
 
     let destinoTexto = "BODEGA_PRINCIPAL";
@@ -24,9 +24,11 @@ function extraerDatosNota() {
     const lineas = [];
     let tablaProductos = null;
     
+    // Buscamos la tabla correcta
     document.querySelectorAll("table").forEach(tabla => {
       const txt = tabla.innerText.toUpperCase();
-      if (txt.includes("CANTIDAD") && txt.includes("CÓDIGO") && txt.includes("DESCRIPCIÓN")) {
+      // Buscamos "CANT" y "CÓDIGO" que están en ambos formatos
+      if (txt.includes("CÓDIGO") && txt.includes("CANT")) {
         tablaProductos = tabla;
       }
     });
@@ -34,18 +36,33 @@ function extraerDatosNota() {
     if (tablaProductos) {
       tablaProductos.querySelectorAll("tr").forEach(fila => {
         const celdas = fila.querySelectorAll("td");
-        if (celdas.length >= 4) {
-          const cantStr = celdas[0]?.innerText.trim();
-          const codProv = celdas[1]?.innerText.trim();
-          const codMat = celdas[2]?.innerText.trim();
-          const desc = celdas[3]?.innerText.trim();
-
-          if (cantStr && !isNaN(parseFloat(cantStr)) && desc && !desc.toUpperCase().includes("DESCRIPCIÓN")) {
+        
+        // FORMATO 1 (HTML - Tabla con columnas separadas)
+        if (celdas.length >= 6 && celdas[0].innerText.includes("Código") === false) {
+          const codMat = celdas[0]?.innerText.trim();
+          const cantStr = celdas[4]?.innerText.trim();
+          
+          if (codMat && !isNaN(parseFloat(cantStr))) {
             lineas.push({
               cantidad: parseFloat(cantStr),
-              codigoProveedor: codProv,
               codigoMaterial: codMat,
-              descripcion: desc,
+              descripcion: celdas[1]?.innerText.trim() || "",
+              ubicacionFisica: "MUELLE_RECEPCION",
+              unidad: "UN"
+            });
+          }
+        } 
+        // FORMATO 2 (Visor - Texto plano dentro de una celda)
+        else if (celdas.length === 1) {
+          const textoFila = celdas[0].innerText.trim();
+          // Buscamos patrones como: "1 90251080 L0688M Monomando..."
+          const matchTexto = textoFila.match(/^(\d+)\s+([A-Z0-9]+)\s+([A-Z0-9]+)\s+(.+)$/i);
+          if (matchTexto) {
+            lineas.push({
+              cantidad: parseFloat(matchTexto[1]),
+              codigoProveedor: matchTexto[2].trim(),
+              codigoMaterial: matchTexto[3].trim(),
+              descripcion: matchTexto[4].trim(),
               ubicacionFisica: "MUELLE_RECEPCION",
               unidad: "UN"
             });
@@ -67,7 +84,7 @@ function extraerDatosNota() {
   }
 
   // ==========================================
-  // FLUJO 2: NOTA DE CARGA (OUTBOUND / DESPACHO)
+  // FLUJO 2: NOTA DE CARGA (OUTBOUND)
   // ==========================================
   if (url.href.includes("Inf_NotaCarga.asp")) {
     let tipoDocumento = "DESCONOCIDO";
