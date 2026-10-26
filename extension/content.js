@@ -4,7 +4,7 @@ function extraerDatosNota() {
   const url = new URL(window.location.href);
   const textoPagina = document.body.innerText;
 
-    // ==========================================
+  // ==========================================
   // FLUJO 1: ORDEN DE COMPRA (INBOUND / RECEPCIÓN)
   // ==========================================
   if (url.href.includes("VisorRS.aspx") || url.href.includes("OrdenCompra") || textoPagina.includes("Orden Compra")) {
@@ -22,55 +22,49 @@ function extraerDatosNota() {
     if (matchDestino) destinoTexto = matchDestino[1].trim();
 
     const lineas = [];
-    let tablaProductos = null;
     
-    // Buscamos CUALQUIER tabla que contenga la palabra "Código"
-    document.querySelectorAll("table").forEach(tabla => {
-      if (tabla.innerText.includes("Código") || tabla.innerText.includes("CÓDIGO")) {
-        tablaProductos = tabla;
+    // Buscamos TODAS las tablas y recorremos sus filas
+    document.querySelectorAll("table tr").forEach(fila => {
+      const celdas = fila.querySelectorAll("td");
+      
+      // En el formato HTML que vimos, la fila del producto tiene 9 o más columnas
+      // Buscamos la que tenga un Código en la columna 0 y un número en la columna 4 (Cant)
+      if (celdas.length >= 6) {
+        const codMat = celdas[0]?.innerText.trim();
+        let cantStr = celdas[4]?.innerText.replace(",", ".").trim();
+
+        // Validar que no sea la cabecera ("Código") y que la cantidad sea un número válido
+        if (codMat && codMat.toUpperCase() !== "CÓDIGO" && !isNaN(parseFloat(cantStr))) {
+          // Evitar capturar filas de totales (ej. "Valor Neto")
+          if (codMat.toUpperCase().includes("VALOR") || codMat.toUpperCase().includes("TOTAL")) return;
+
+          lineas.push({
+            cantidad: parseFloat(cantStr),
+            codigoMaterial: codMat,
+            descripcion: celdas[1]?.innerText.trim() || "",
+            ubicacionFisica: "MUELLE_RECEPCION",
+            unidad: "UN"
+          });
+        }
       }
     });
 
-    if (tablaProductos) {
-      const filas = tablaProductos.querySelectorAll("tr");
-      let idxCod = 0, idxDesc = 1, idxCant = 4; // Valores por defecto para el formato HTML
-
-      filas.forEach(fila => {
-        const celdas = fila.querySelectorAll("td");
-        
-        // Si es la fila de cabecera, mapeamos los índices exactos
-        if (fila.innerText.includes("Código") && fila.innerText.includes("Descripción")) {
-          celdas.forEach((celda, i) => {
-            const txt = celda.innerText.toUpperCase().trim();
-            if (txt.includes("CÓDIGO")) idxCod = i;
-            if (txt.includes("DESCRIPCIÓN")) idxDesc = i;
-            if (txt === "CANT" || txt.includes("CANTIDAD")) idxCant = i;
-          });
-          return; // Saltamos la cabecera
-        }
-
-        // Si es una fila de producto
-        if (celdas.length >= 5) {
-          const codMat = celdas[idxCod]?.innerText.trim();
-          let cantStr = celdas[idxCant]?.innerText.replace(",", ".").trim();
-          
-          // Validar que no sea la cabecera y que la cantidad sea un número
-          if (codMat && codMat !== "Código" && !isNaN(parseFloat(cantStr))) {
-            lineas.push({
-              cantidad: parseFloat(cantStr),
-              codigoMaterial: codMat,
-              descripcion: celdas[idxDesc]?.innerText.trim() || "",
-              ubicacionFisica: "MUELLE_RECEPCION",
-              unidad: "UN"
-            });
-          }
-        }
-      });
-    }
-
-    // --- DEBUG DE EMERGENCIA ---
+    // Si después de buscar en las tablas no hay nada, probamos con el formato PDF viejo
     if (lineas.length === 0) {
-      console.log("🔎 DEBUG: Filas crudas encontradas en la tabla:", tablaProductos ? tablaProductos.innerText : "No se encontró tabla");
+      const regexLinea = /(\d+)\s+([A-Z0-9]+)\s+([A-Z0-9]+)\s+([^\n$]+)/gi;
+      let match;
+      while ((match = regexLinea.exec(textoPagina)) !== null) {
+        const descripcion = match[4].trim();
+        if (descripcion.includes("Precio") || descripcion.includes("Total") || descripcion.includes("Descuento")) continue;
+        lineas.push({
+          cantidad: parseFloat(match[1]),
+          codigoProveedor: match[2].trim(),
+          codigoMaterial: match[3].trim(),
+          descripcion: descripcion,
+          ubicacionFisica: "MUELLE_RECEPCION",
+          unidad: "UN"
+        });
+      }
     }
 
     return {
@@ -85,7 +79,7 @@ function extraerDatosNota() {
     };
   }
 
-  // ==========================================
+    // ==========================================
   // FLUJO 2: NOTA DE CARGA (OUTBOUND)
   // ==========================================
   if (url.href.includes("Inf_NotaCarga.asp")) {
